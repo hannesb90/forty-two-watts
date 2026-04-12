@@ -55,16 +55,15 @@ pub struct ControlState {
 
 impl ControlState {
     pub fn new(grid_target_w: f64, grid_tolerance_w: f64, site_meter_driver: String) -> Self {
-        // PI controller tuned for home battery systems:
-        // - Kp = 0.4: moderate proportional response (40% of error per cycle)
-        // - Ki = 0.05: slow integral to eliminate steady-state offset
-        // - No derivative (Kd = 0): batteries have inherent lag, D would amplify noise
-        // - Output limit: ±10kW total dispatch (both batteries combined)
-        // - I limit: ±2000W to prevent integral windup during large transients
+        // PI controller: steady over 15-minute energy periods, not twitchy
+        // - Kp = 0.5: correct half the error each cycle — smooth, no overshoot
+        // - Ki = 0.1: steady integral buildup ensures energy balance over time.
+        //   If we undershoot for minutes, the I-term accumulates and catches up
+        // - I limit: ±3000W — enough headroom for full load coverage
         let mut pid = Pid::new(grid_target_w, 10000.0);
-        pid.p(0.4, 10000.0);   // Kp with proportional limit
-        pid.i(0.05, 2000.0);   // Ki with anti-windup limit
-        pid.d(0.0, 0.0);       // No derivative
+        pid.p(0.5, 10000.0);
+        pid.i(0.1, 3000.0);
+        pid.d(0.0, 0.0);
 
         Self {
             mode: Mode::SelfConsumption,
@@ -75,8 +74,8 @@ impl ControlState {
             weights: HashMap::new(),
             last_targets: Vec::new(),
             pid_controller: pid,
-            slew_rate_w: 300.0,
-            min_dispatch_interval_s: 10,
+            slew_rate_w: 500.0,     // 500W per cycle — settles in ~10 cycles
+            min_dispatch_interval_s: 5, // dispatch every 5s
             last_dispatch: None,
             prev_targets: HashMap::new(),
         }
