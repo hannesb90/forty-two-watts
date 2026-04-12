@@ -34,7 +34,7 @@ fn main() {
         )
         .init();
 
-    info!("home-ems v{}", env!("CARGO_PKG_VERSION"));
+    info!("forty-two-watts v{} — The Answer to Grid Balancing", env!("CARGO_PKG_VERSION"));
 
     let config_path = std::env::args()
         .nth(1)

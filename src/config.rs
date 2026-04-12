@@ -113,7 +113,7 @@ pub struct StateConfig {
 
 // Defaults
 fn default_control_interval() -> u64 { 5 }
-fn default_tolerance() -> f64 { 50.0 }
+fn default_tolerance() -> f64 { 42.0 } // The Answer
 fn default_watchdog() -> u64 { 60 }
 fn default_alpha() -> f64 { 0.3 }
 fn default_gain() -> f64 { 0.4 }

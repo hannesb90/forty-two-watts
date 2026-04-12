@@ -153,10 +153,10 @@ pub fn compute_dispatch(
         return Vec::new();
     }
 
-    // Deadband — don't adjust if within tolerance
+    // Deadband — don't adjust if within 42W of The Answer
     let error = grid_w - state.grid_target_w;
     if error.abs() < state.grid_tolerance_w {
-        debug!("grid={:.0}W within tolerance, holding", grid_w);
+        debug!("grid={:.0}W — Don't Panic. Within {}W of The Answer.", grid_w, state.grid_tolerance_w as i64);
         return Vec::new();
     }
 
