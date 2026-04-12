@@ -36,7 +36,63 @@ pub enum DriverStatus {
     Offline,
 }
 
-/// A single DER reading with smoothing
+/// 1D Kalman filter for power signal smoothing.
+/// Adapts automatically to signal noise — noisy signals get smoothed more,
+/// stable signals pass through faster.
+#[derive(Debug, Clone)]
+pub struct KalmanFilter1D {
+    /// Current state estimate (watts)
+    pub estimate: f64,
+    /// Estimation uncertainty
+    pub uncertainty: f64,
+    /// Process noise (how much we expect the true value to change per step)
+    process_noise: f64,
+    /// Measurement noise (how noisy the sensor readings are)
+    measurement_noise: f64,
+    /// Whether this filter has been initialized
+    initialized: bool,
+}
+
+impl KalmanFilter1D {
+    /// Create a new Kalman filter.
+    /// - process_noise: expected change between readings (e.g. 100 for power that varies ~100W/s)
+    /// - measurement_noise: sensor noise (e.g. 50 for a meter with ±50W jitter)
+    pub fn new(process_noise: f64, measurement_noise: f64) -> Self {
+        Self {
+            estimate: 0.0,
+            uncertainty: 1000.0, // start uncertain
+            process_noise,
+            measurement_noise,
+            initialized: false,
+        }
+    }
+
+    /// Update with a new measurement. Returns the filtered estimate.
+    pub fn update(&mut self, measurement: f64) -> f64 {
+        if !self.initialized {
+            self.estimate = measurement;
+            self.uncertainty = self.measurement_noise;
+            self.initialized = true;
+            return measurement;
+        }
+
+        // Predict step: uncertainty grows by process noise
+        let predicted_uncertainty = self.uncertainty + self.process_noise;
+
+        // Kalman gain: how much to trust the measurement vs prediction
+        // High gain = trust measurement more (noisy estimate or stable measurement)
+        // Low gain = trust prediction more (stable estimate or noisy measurement)
+        let gain = predicted_uncertainty / (predicted_uncertainty + self.measurement_noise);
+
+        // Update step
+        self.estimate = self.estimate + gain * (measurement - self.estimate);
+        self.uncertainty = (1.0 - gain) * predicted_uncertainty;
+
+        self.estimate
+    }
+}
+
+/// A single DER reading with Kalman-filtered smoothing
 #[derive(Debug, Clone)]
 pub struct DerReading {
     pub driver: String,
@@ -98,22 +154,26 @@ impl DriverHealth {
     }
 }
 
-/// Central telemetry store — shared across threads via Arc<Mutex<TelemetryStore>>
+/// Central telemetry store with Kalman-filtered smoothing
 pub struct TelemetryStore {
-    /// Key: "driver_name:der_type" (e.g. "ferroamp:meter")
     readings: HashMap<String, DerReading>,
-    /// Per-driver health
+    filters: HashMap<String, KalmanFilter1D>,
     health: HashMap<String, DriverHealth>,
-    /// EMA smoothing alpha
-    alpha: f64,
+    process_noise: f64,
+    measurement_noise: f64,
 }
 
 impl TelemetryStore {
-    pub fn new(alpha: f64) -> Self {
+    pub fn new(_alpha: f64) -> Self {
+        // Alpha is ignored now — Kalman filter auto-adapts
+        // Process noise: how much power changes between samples (~100W typical)
+        // Measurement noise: sensor jitter (~50W for power meters)
         Self {
             readings: HashMap::new(),
+            filters: HashMap::new(),
             health: HashMap::new(),
-            alpha,
+            process_noise: 100.0,
+            measurement_noise: 50.0,
         }
     }
 
@@ -121,15 +181,13 @@ impl TelemetryStore {
         format!("{}:{}", driver, der_type.as_str())
     }
 
-    /// Update a DER reading with EMA smoothing
+    /// Update a DER reading with Kalman filtering
     pub fn update(&mut self, driver: &str, der_type: &DerType, data: serde_json::Value, raw_w: f64, soc: Option<f64>) {
         let key = Self::key(driver, der_type);
 
-        let smoothed_w = if let Some(prev) = self.readings.get(&key) {
-            self.alpha * raw_w + (1.0 - self.alpha) * prev.smoothed_w
-        } else {
-            raw_w
-        };
+        let filter = self.filters.entry(key.clone())
+            .or_insert_with(|| KalmanFilter1D::new(self.process_noise, self.measurement_noise));
+        let smoothed_w = filter.update(raw_w);
 
         self.readings.insert(key, DerReading {
             driver: driver.to_string(),
@@ -142,42 +200,35 @@ impl TelemetryStore {
         });
     }
 
-    /// Get a specific reading
     pub fn get(&self, driver: &str, der_type: &DerType) -> Option<&DerReading> {
         self.readings.get(&Self::key(driver, der_type))
     }
 
-    /// Get all readings of a specific DER type
     pub fn readings_by_type(&self, der_type: &DerType) -> Vec<&DerReading> {
         self.readings.values()
             .filter(|r| &r.der_type == der_type)
             .collect()
     }
 
-    /// Get all readings for a driver
     pub fn readings_by_driver(&self, driver: &str) -> Vec<&DerReading> {
         self.readings.values()
             .filter(|r| r.driver == driver)
             .collect()
     }
 
-    /// Get or create driver health tracker
     pub fn driver_health_mut(&mut self, name: &str) -> &mut DriverHealth {
         self.health.entry(name.to_string())
             .or_insert_with(|| DriverHealth::new(name))
     }
 
-    /// Get driver health
     pub fn driver_health(&self, name: &str) -> Option<&DriverHealth> {
         self.health.get(name)
     }
 
-    /// Get all driver health entries
     pub fn all_health(&self) -> &HashMap<String, DriverHealth> {
         &self.health
     }
 
-    /// Check if a reading is stale (older than timeout)
     pub fn is_stale(&self, driver: &str, der_type: &DerType, timeout_s: u64) -> bool {
         match self.get(driver, der_type) {
             Some(reading) => reading.updated_at.elapsed().as_secs() > timeout_s,

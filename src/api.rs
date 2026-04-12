@@ -237,7 +237,7 @@ fn handle_set_target(
             if let Some(target) = v.get("grid_target_w").and_then(|t| t.as_f64()) {
                 let mut control = control.lock().unwrap();
                 info!("grid target changed to {}W", target);
-                control.grid_target_w = target;
+                control.set_grid_target(target);
                 json_response(200, &serde_json::json!({"grid_target_w": target}))
             } else {
                 json_response(400, &serde_json::json!({"error": "missing grid_target_w"}))

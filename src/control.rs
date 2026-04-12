@@ -1,21 +1,18 @@
 use std::collections::HashMap;
+use std::time::Instant;
+use pid::Pid;
 use tracing::{info, warn, debug};
 
-use crate::telemetry::{TelemetryStore, DerType, DriverStatus};
+use crate::telemetry::{TelemetryStore, DerType};
 
 /// EMS operating mode
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
-    /// No dispatch — both systems run autonomously
     Idle,
-    /// Target grid_target_w (default 0 = self-consumption)
     SelfConsumption,
-    /// Force all batteries to max charge
     Charge,
-    /// One battery is primary, secondary only when primary saturated
     Priority,
-    /// Custom weights instead of capacity-proportional
     Weighted,
 }
 
@@ -30,10 +27,10 @@ impl Default for Mode {
 pub struct DispatchTarget {
     pub driver: String,
     pub target_w: f64,
-    pub clamped: bool, // was the target clamped by limits?
+    pub clamped: bool,
 }
 
-/// Control loop state with anti-oscillation parameters
+/// Control loop state with PI controller and anti-oscillation
 pub struct ControlState {
     pub mode: Mode,
     pub grid_target_w: f64,
@@ -43,20 +40,32 @@ pub struct ControlState {
     pub weights: HashMap<String, f64>,
     pub last_targets: Vec<DispatchTarget>,
 
-    // Anti-oscillation: proportional gain (0-1, lower = less aggressive)
-    pub gain: f64,
+    // PI controller (replaces manual proportional gain)
+    pid_controller: Pid<f64>,
+
     // Anti-oscillation: max watts change per dispatch cycle
     pub slew_rate_w: f64,
     // Anti-oscillation: minimum seconds between dispatches
     pub min_dispatch_interval_s: u64,
     // Track when we last dispatched
-    pub last_dispatch: Option<std::time::Instant>,
-    // Previous per-driver targets (for slew rate limiting)
+    pub last_dispatch: Option<Instant>,
+    // Previous per-driver targets for slew rate limiting
     prev_targets: HashMap<String, f64>,
 }
 
 impl ControlState {
     pub fn new(grid_target_w: f64, grid_tolerance_w: f64, site_meter_driver: String) -> Self {
+        // PI controller tuned for home battery systems:
+        // - Kp = 0.4: moderate proportional response (40% of error per cycle)
+        // - Ki = 0.05: slow integral to eliminate steady-state offset
+        // - No derivative (Kd = 0): batteries have inherent lag, D would amplify noise
+        // - Output limit: ±10kW total dispatch (both batteries combined)
+        // - I limit: ±2000W to prevent integral windup during large transients
+        let mut pid = Pid::new(grid_target_w, 10000.0);
+        pid.p(0.4, 10000.0);   // Kp with proportional limit
+        pid.i(0.05, 2000.0);   // Ki with anti-windup limit
+        pid.d(0.0, 0.0);       // No derivative
+
         Self {
             mode: Mode::SelfConsumption,
             grid_target_w,
@@ -65,16 +74,18 @@ impl ControlState {
             priority_order: Vec::new(),
             weights: HashMap::new(),
             last_targets: Vec::new(),
-            // Anti-oscillation defaults:
-            // Only correct 40% of error each cycle — converges in ~3 cycles without overshoot
-            gain: 0.4,
-            // Max 300W change per cycle — prevents step changes that cause ringing
+            pid_controller: pid,
             slew_rate_w: 300.0,
-            // Wait 10s between dispatches — batteries need time to settle
             min_dispatch_interval_s: 10,
             last_dispatch: None,
             prev_targets: HashMap::new(),
         }
+    }
+
+    /// Update the grid target (also updates PID setpoint)
+    pub fn set_grid_target(&mut self, target: f64) {
+        self.grid_target_w = target;
+        self.pid_controller.setpoint = target;
     }
 }
 
@@ -101,12 +112,21 @@ pub fn compute_dispatch(
             return Vec::new();
         }
         Mode::Charge => {
-            return compute_charge_all(store, driver_capacities);
+            let targets = compute_charge_all(store, driver_capacities);
+            state.last_targets = targets.clone();
+            return targets;
         }
         _ => {}
     }
 
-    // Read site meter (only the designated site meter driver, not all meters)
+    // Command holdoff — wait for batteries to settle
+    if let Some(last) = state.last_dispatch {
+        if last.elapsed().as_secs() < state.min_dispatch_interval_s {
+            return Vec::new();
+        }
+    }
+
+    // Read site meter (Kalman-filtered)
     let grid_w: f64 = store.get(&state.site_meter_driver, &DerType::Meter)
         .map(|m| m.smoothed_w)
         .unwrap_or(0.0);
@@ -133,50 +153,37 @@ pub fn compute_dispatch(
         return Vec::new();
     }
 
-    // Command holdoff — don't re-dispatch until previous command has settled
-    if let Some(last) = state.last_dispatch {
-        if last.elapsed().as_secs() < state.min_dispatch_interval_s {
-            debug!("grid={:.0}W, holdoff ({:.0}s since last dispatch)",
-                grid_w, last.elapsed().as_secs_f32());
-            return Vec::new(); // return empty = no dispatch this cycle
-        }
-    }
-
-    // Compute error
-    let error = grid_w - state.grid_target_w;
-
     // Deadband — don't adjust if within tolerance
+    let error = grid_w - state.grid_target_w;
     if error.abs() < state.grid_tolerance_w {
-        debug!("grid={:.0}W, target={:.0}W, within tolerance ({:.0}W), holding",
-            grid_w, state.grid_target_w, state.grid_tolerance_w);
+        debug!("grid={:.0}W within tolerance, holding", grid_w);
         return Vec::new();
     }
 
-    // Apply proportional gain — only correct a fraction of the error
-    // This prevents overshoot: gain=0.4 means we correct 40% per cycle,
-    // converging smoothly in ~3 cycles instead of oscillating
-    let corrected_error = error * state.gain;
+    // PI controller: feed the grid measurement, get total correction needed
+    // PID setpoint = grid_target_w, measurement = grid_w
+    // Output is the total battery power adjustment needed (negative = discharge)
+    let pid_output = state.pid_controller.next_control_output(grid_w);
+    let total_correction = -pid_output.output; // negate: positive PID output (importing) → negative battery (discharge)
 
-    debug!("grid={:.0}W, target={:.0}W, error={:.0}W, corrected={:.0}W (gain={:.1})",
-        grid_w, state.grid_target_w, error, corrected_error, state.gain);
+    debug!("PI: grid={:.0}W target={:.0}W error={:.0}W P={:.0} I={:.0} correction={:.0}W",
+        grid_w, state.grid_target_w, error,
+        pid_output.p, pid_output.i, total_correction);
 
-    // Compute raw per-battery targets based on mode
+    // Distribute correction across batteries based on mode
     let mut targets = match &state.mode {
-        Mode::SelfConsumption => compute_proportional(&batteries, corrected_error, driver_capacities),
-        Mode::Priority => compute_priority(&batteries, corrected_error, &state.priority_order),
-        Mode::Weighted => compute_weighted(&batteries, corrected_error, &state.weights),
+        Mode::SelfConsumption => distribute_proportional(&batteries, total_correction, driver_capacities),
+        Mode::Priority => distribute_priority(&batteries, total_correction, &state.priority_order),
+        Mode::Weighted => distribute_weighted(&batteries, total_correction, &state.weights),
         _ => Vec::new(),
     };
 
-    // Apply slew rate limit — don't change any target by more than slew_rate_w per cycle
+    // Apply slew rate limit per driver
     for target in &mut targets {
         if let Some(&prev) = state.prev_targets.get(&target.driver) {
             let delta = target.target_w - prev;
             if delta.abs() > state.slew_rate_w {
-                let limited = prev + delta.signum() * state.slew_rate_w;
-                debug!("slew limit {}: {:.0}W → {:.0}W (wanted {:.0}W)",
-                    target.driver, prev, limited, target.target_w);
-                target.target_w = limited;
+                target.target_w = prev + delta.signum() * state.slew_rate_w;
                 target.clamped = true;
             }
         }
@@ -186,33 +193,32 @@ pub fn compute_dispatch(
     let targets = apply_fuse_guard(targets, store, fuse_max_w);
 
     // Update state
-    state.last_dispatch = Some(std::time::Instant::now());
+    state.last_dispatch = Some(Instant::now());
     for t in &targets {
         state.prev_targets.insert(t.driver.clone(), t.target_w);
     }
     state.last_targets = targets.clone();
+
+    info!("dispatch: grid={:.0}W → {}",
+        grid_w,
+        targets.iter().map(|t| format!("{}={:.0}W", t.driver, t.target_w)).collect::<Vec<_>>().join(" "));
+
     targets
 }
 
-/// Self-consumption: split correction proportionally by battery capacity.
-/// Correction is negated error: positive error (importing) → negative correction (discharge).
-fn compute_proportional(
+/// Distribute total correction proportionally by battery capacity
+fn distribute_proportional(
     batteries: &[BatteryInfo],
-    error: f64,
-    capacities: &HashMap<String, f64>,
+    total_correction: f64,
+    _capacities: &HashMap<String, f64>,
 ) -> Vec<DispatchTarget> {
     let total_cap: f64 = batteries.iter().map(|b| b.capacity_wh).sum();
-    if total_cap == 0.0 {
-        return Vec::new();
-    }
-
-    // Negate: positive error means importing → need negative (discharge) to compensate
-    let correction = -error;
+    if total_cap == 0.0 { return Vec::new(); }
 
     batteries.iter().map(|bat| {
-        let share = correction * (bat.capacity_wh / total_cap);
+        let share = total_correction * (bat.capacity_wh / total_cap);
         let target = bat.current_w + share;
-        let (clamped_target, was_clamped) = clamp_with_soc(target, bat.soc, bat.capacity_wh);
+        let (clamped_target, was_clamped) = clamp_with_soc(target, bat.soc);
         DispatchTarget {
             driver: bat.driver.clone(),
             target_w: clamped_target,
@@ -221,23 +227,20 @@ fn compute_proportional(
     }).collect()
 }
 
-/// Priority: primary battery handles all, secondary only when saturated
-fn compute_priority(
+/// Primary battery handles all, secondary fills remainder
+fn distribute_priority(
     batteries: &[BatteryInfo],
-    error: f64,
+    total_correction: f64,
     priority_order: &[String],
 ) -> Vec<DispatchTarget> {
-    let mut remaining = -error; // negate: import → discharge
+    let mut remaining = total_correction;
     let mut targets = Vec::new();
 
-    // Process in priority order
     for name in priority_order {
         if let Some(bat) = batteries.iter().find(|b| &b.driver == name) {
             let target = bat.current_w + remaining;
-            let (clamped_target, was_clamped) = clamp_with_soc(target, bat.soc, bat.capacity_wh);
-            let absorbed = clamped_target - bat.current_w;
-            remaining -= absorbed;
-
+            let (clamped_target, was_clamped) = clamp_with_soc(target, bat.soc);
+            remaining -= clamped_target - bat.current_w;
             targets.push(DispatchTarget {
                 driver: bat.driver.clone(),
                 target_w: clamped_target,
@@ -246,7 +249,6 @@ fn compute_priority(
         }
     }
 
-    // Any batteries not in priority order get 0 adjustment
     for bat in batteries {
         if !targets.iter().any(|t| t.driver == bat.driver) {
             targets.push(DispatchTarget {
@@ -260,27 +262,22 @@ fn compute_priority(
     targets
 }
 
-/// Weighted: custom weights instead of capacity-proportional
-fn compute_weighted(
+/// Custom weights for distribution
+fn distribute_weighted(
     batteries: &[BatteryInfo],
-    error: f64,
+    total_correction: f64,
     weights: &HashMap<String, f64>,
 ) -> Vec<DispatchTarget> {
     let total_weight: f64 = batteries.iter()
         .map(|b| weights.get(&b.driver).copied().unwrap_or(1.0))
         .sum();
-
-    if total_weight == 0.0 {
-        return Vec::new();
-    }
-
-    let correction = -error; // negate: import → discharge
+    if total_weight == 0.0 { return Vec::new(); }
 
     batteries.iter().map(|bat| {
         let w = weights.get(&bat.driver).copied().unwrap_or(1.0);
-        let share = correction * (w / total_weight);
+        let share = total_correction * (w / total_weight);
         let target = bat.current_w + share;
-        let (clamped_target, was_clamped) = clamp_with_soc(target, bat.soc, bat.capacity_wh);
+        let (clamped_target, was_clamped) = clamp_with_soc(target, bat.soc);
         DispatchTarget {
             driver: bat.driver.clone(),
             target_w: clamped_target,
@@ -294,21 +291,19 @@ fn compute_charge_all(
     store: &TelemetryStore,
     capacities: &HashMap<String, f64>,
 ) -> Vec<DispatchTarget> {
-    capacities.iter().filter_map(|(name, _cap)| {
+    capacities.iter().filter_map(|(name, _)| {
         let health = store.driver_health(name)?;
         if !health.is_online() { return None; }
-        // Positive = charging. Use a reasonable max charge power.
         Some(DispatchTarget {
             driver: name.clone(),
-            target_w: 5000.0, // 5 kW charge (will be clamped by driver)
+            target_w: 5000.0,
             clamped: false,
         })
     }).collect()
 }
 
 /// Clamp target power with SoC guards
-/// Returns (clamped_value, was_clamped)
-fn clamp_with_soc(target_w: f64, soc: f64, _capacity_wh: f64) -> (f64, bool) {
+fn clamp_with_soc(target_w: f64, soc: f64) -> (f64, bool) {
     let mut clamped = target_w;
     let mut was_clamped = false;
 
@@ -324,8 +319,8 @@ fn clamp_with_soc(target_w: f64, soc: f64, _capacity_wh: f64) -> (f64, bool) {
         was_clamped = true;
     }
 
-    // General power limits (reasonable defaults for home batteries)
-    let max_power = 10000.0; // 10 kW
+    // Power limits
+    let max_power = 5000.0;
     if clamped.abs() > max_power {
         clamped = clamped.signum() * max_power;
         was_clamped = true;
@@ -334,17 +329,15 @@ fn clamp_with_soc(target_w: f64, soc: f64, _capacity_wh: f64) -> (f64, bool) {
     (clamped, was_clamped)
 }
 
-/// Ensure total discharge + PV doesn't exceed fuse limit
+/// Ensure total power doesn't exceed fuse limit
 fn apply_fuse_guard(
     mut targets: Vec<DispatchTarget>,
     store: &TelemetryStore,
     fuse_max_w: f64,
 ) -> Vec<DispatchTarget> {
-    // Sum PV generation (negative convention in telemetry)
     let pvs = store.readings_by_type(&DerType::Pv);
     let total_pv_w: f64 = pvs.iter().map(|p| p.smoothed_w.abs()).sum();
 
-    // Sum discharge power from targets (negative = discharge)
     let total_discharge_w: f64 = targets.iter()
         .filter(|t| t.target_w < 0.0)
         .map(|t| t.target_w.abs())
@@ -354,9 +347,8 @@ fn apply_fuse_guard(
 
     if total_generation > fuse_max_w {
         let scale = fuse_max_w / total_generation;
-        warn!("fuse guard: total generation {:.0}W exceeds limit {:.0}W, scaling discharge by {:.2}",
+        warn!("fuse guard: {:.0}W > {:.0}W limit, scaling by {:.2}",
             total_generation, fuse_max_w, scale);
-
         for target in &mut targets {
             if target.target_w < 0.0 {
                 target.target_w *= scale;

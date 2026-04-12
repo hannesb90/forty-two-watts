@@ -129,6 +129,7 @@ version = "0.1.0"
 dependencies = [
  "ctrlc",
  "mlua",
+ "pid",
  "redb",
  "serde",
  "serde_json",
@@ -323,6 +324,15 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pid"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c931ef9756cd5e3fa3d395bfe09df4dfa6f0612c6ca8f6b12927d17ca34e36"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
