@@ -106,10 +106,10 @@ fn handle_status(
     let pv_w: f64 = pvs.iter().map(|p| p.smoothed_w).sum();
     let bat_w: f64 = bats.iter().map(|b| b.smoothed_w).sum();
 
-    // Load = house consumption = grid import + PV generation (excluding battery flows)
-    // grid_w positive=import, pv_w negative=generation
-    // Battery is NOT part of load — it's a controllable resource
-    let load_w: f64 = grid_w - pv_w;
+    // Load = house consumption (energy balance: what the house actually uses)
+    // load = grid_import + pv_generation + battery_discharge
+    // In our signs: grid(+import) - pv(negative=gen) - bat(negative=discharge)
+    let load_w: f64 = grid_w - pv_w - bat_w;
 
     // Weighted average SoC by capacity
     let total_cap: f64 = bats.iter()
