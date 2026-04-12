@@ -140,7 +140,8 @@ pub fn compute_dispatch(
     targets
 }
 
-/// Self-consumption: split error proportionally by battery capacity
+/// Self-consumption: split correction proportionally by battery capacity.
+/// Correction is negated error: positive error (importing) → negative correction (discharge).
 fn compute_proportional(
     batteries: &[BatteryInfo],
     error: f64,
@@ -151,8 +152,11 @@ fn compute_proportional(
         return Vec::new();
     }
 
+    // Negate: positive error means importing → need negative (discharge) to compensate
+    let correction = -error;
+
     batteries.iter().map(|bat| {
-        let share = error * (bat.capacity_wh / total_cap);
+        let share = correction * (bat.capacity_wh / total_cap);
         let target = bat.current_w + share;
         let (clamped_target, was_clamped) = clamp_with_soc(target, bat.soc, bat.capacity_wh);
         DispatchTarget {
@@ -169,7 +173,7 @@ fn compute_priority(
     error: f64,
     priority_order: &[String],
 ) -> Vec<DispatchTarget> {
-    let mut remaining = error;
+    let mut remaining = -error; // negate: import → discharge
     let mut targets = Vec::new();
 
     // Process in priority order
@@ -216,9 +220,11 @@ fn compute_weighted(
         return Vec::new();
     }
 
+    let correction = -error; // negate: import → discharge
+
     batteries.iter().map(|bat| {
         let w = weights.get(&bat.driver).copied().unwrap_or(1.0);
-        let share = error * (w / total_weight);
+        let share = correction * (w / total_weight);
         let target = bat.current_w + share;
         let (clamped_target, was_clamped) = clamp_with_soc(target, bat.soc, bat.capacity_wh);
         DispatchTarget {

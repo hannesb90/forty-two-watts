@@ -11,7 +11,10 @@
   var chartHistory = {
     grid: [],
     pv: [],
-    bat: [],
+    ferroamp_bat: [],
+    sungrow_bat: [],
+    ferroamp_target: [],
+    sungrow_target: [],
   };
 
   // ---- DOM refs ----
@@ -116,8 +119,15 @@
     // Dispatch
     renderDispatch(data.dispatch || []);
 
-    // Chart
-    pushChartData(data.grid_w, Math.abs(data.pv_w), data.bat_w);
+    // Chart — per-driver battery actual + dispatch targets
+    var fd = data.drivers.ferroamp || {};
+    var sd = data.drivers.sungrow || {};
+    var ft = 0, st = 0;
+    (data.dispatch || []).forEach(function(d) {
+      if (d.driver === "ferroamp") ft = d.target_w;
+      if (d.driver === "sungrow") st = d.target_w;
+    });
+    pushChartData(data.grid_w, Math.abs(data.pv_w), fd.bat_w||0, sd.bat_w||0, ft, st);
     renderChart();
 
     // Timestamp
@@ -125,14 +135,20 @@
       "Last update: " + new Date().toLocaleTimeString();
   }
 
-  function pushChartData(grid, pv, bat) {
+  function pushChartData(grid, pv, ferroBat, sunBat, ferroTarget, sunTarget) {
     chartHistory.grid.push(grid);
     chartHistory.pv.push(pv);
-    chartHistory.bat.push(bat);
+    chartHistory.ferroamp_bat.push(ferroBat);
+    chartHistory.sungrow_bat.push(sunBat);
+    chartHistory.ferroamp_target.push(ferroTarget);
+    chartHistory.sungrow_target.push(sunTarget);
     if (chartHistory.grid.length > CHART_POINTS) {
       chartHistory.grid.shift();
       chartHistory.pv.shift();
-      chartHistory.bat.shift();
+      chartHistory.ferroamp_bat.shift();
+      chartHistory.sungrow_bat.shift();
+      chartHistory.ferroamp_target.shift();
+      chartHistory.sungrow_target.shift();
     }
   }
 
@@ -149,8 +165,10 @@
     var plotW = w - pad.left - pad.right;
     var plotH = h - pad.top - pad.bottom;
 
-    // Find y range
-    var all = chartHistory.grid.concat(chartHistory.pv).concat(chartHistory.bat);
+    // Find y range across all series
+    var all = chartHistory.grid.concat(chartHistory.pv)
+      .concat(chartHistory.ferroamp_bat).concat(chartHistory.sungrow_bat)
+      .concat(chartHistory.ferroamp_target).concat(chartHistory.sungrow_target);
     if (all.length === 0) return;
     var yMin = Math.min(0, Math.min.apply(null, all));
     var yMax = Math.max(100, Math.max.apply(null, all));
@@ -191,17 +209,21 @@
       ctx.setLineDash([]);
     }
 
-    // Draw series
+    // Draw series: solid = actual, dashed = target
     var series = [
-      { data: chartHistory.grid, color: "#ef4444" },
-      { data: chartHistory.pv, color: "#22c55e" },
-      { data: chartHistory.bat, color: "#3b82f6" },
+      { data: chartHistory.grid,            color: "#ef4444", width: 2, dash: [] },
+      { data: chartHistory.pv,              color: "#22c55e", width: 2, dash: [] },
+      { data: chartHistory.ferroamp_bat,    color: "#f59e0b", width: 2, dash: [] },       // amber solid
+      { data: chartHistory.ferroamp_target, color: "#f59e0b", width: 1.5, dash: [6, 4] }, // amber dashed
+      { data: chartHistory.sungrow_bat,     color: "#8b5cf6", width: 2, dash: [] },       // purple solid
+      { data: chartHistory.sungrow_target,  color: "#8b5cf6", width: 1.5, dash: [6, 4] }, // purple dashed
     ];
 
     series.forEach(function (s) {
       if (s.data.length < 2) return;
       ctx.strokeStyle = s.color;
-      ctx.lineWidth = 2;
+      ctx.lineWidth = s.width;
+      ctx.setLineDash(s.dash);
       ctx.beginPath();
       for (var j = 0; j < s.data.length; j++) {
         var x = pad.left + (plotW * j / (CHART_POINTS - 1));
@@ -210,6 +232,7 @@
         else ctx.lineTo(x, y);
       }
       ctx.stroke();
+      ctx.setLineDash([]);
     });
 
     // Time labels
