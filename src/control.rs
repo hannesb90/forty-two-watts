@@ -338,24 +338,23 @@ fn compute_charge_all(
     }).collect()
 }
 
-/// Clamp target power with SoC guards
+/// Clamp target power with SoC guards.
+/// Hard limits only — each battery's own BMS handles fine-grained SoC management.
+/// We just prevent obviously dumb extremes.
 fn clamp_with_soc(target_w: f64, soc: f64) -> (f64, bool) {
     let mut clamped = target_w;
     let mut was_clamped = false;
 
-    // Don't discharge below 10% SoC
-    if soc < 0.10 && target_w < 0.0 {
+    // Hard floor: don't discharge below 5% (battery BMS will protect below this anyway)
+    if soc < 0.05 && target_w < 0.0 {
         clamped = 0.0;
         was_clamped = true;
     }
 
-    // Don't charge above 95% SoC
-    if soc > 0.95 && target_w > 0.0 {
-        clamped = 0.0;
-        was_clamped = true;
-    }
+    // No charge cap — let the battery's own BMS decide when to stop.
+    // Our old 95% cap was causing wasted PV export on near-full batteries.
 
-    // Power limits
+    // Per-command power cap (5kW) — protects against silly command values
     let max_power = 5000.0;
     if clamped.abs() > max_power {
         clamped = clamped.signum() * max_power;
