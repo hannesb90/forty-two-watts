@@ -3,9 +3,20 @@
 (function () {
   "use strict";
 
-  const POLL_INTERVAL = 5000;
-  const CHART_POINTS = 60; // 5 min at 5s intervals
+  const POLL_INTERVAL = 2000;        // status poll cadence — snappier cards
+  const CHART_POINTS = 360;          // up to 30 min of points (server pushes every ~5s)
+  const CHART_RANGE_MS = {           // visible time window per range option
+    "5m": 5 * 60 * 1000,
+    "15m": 15 * 60 * 1000,
+    "1h": 60 * 60 * 1000,
+    "6h": 6 * 60 * 60 * 1000,
+    "24h": 24 * 60 * 60 * 1000,
+    "3d": 3 * 24 * 60 * 60 * 1000,
+  };
+  let chartRange = "5m";             // current selected range
   let currentMode = null;
+  let animating = true;              // 30fps redraw loop flag
+  let lastDataTs = 0;                // timestamp of newest data point — for "live" pulse
 
   // ---- Chart data ----
   var chartHistory = {
@@ -201,12 +212,18 @@
       if (d.driver === "sungrow") st = d.target_w;
     });
     pushChartData(data, fd.bat_w||0, sd.bat_w||0, ft, st);
-    renderChart();
+    // No explicit renderChart() — the rAF loop redraws ~30fps for a smooth flowing feel.
     // Timestamp is updated in fetchStatus (before render, so it's robust to render errors)
   }
 
   function pushChartData(data, ferroBat, sunBat, ferroTarget, sunTarget) {
     var t = (data.energy && data.energy.today) || {};
+    var now = Date.now();
+    // Dedupe — server pushes new history items only every ~5s; the 2s status
+    // poll would otherwise duplicate the latest point.
+    var lastTs = chartHistory.timestamps[chartHistory.timestamps.length - 1] || 0;
+    if (now - lastTs < 1500) return;
+
     chartHistory.grid.push(data.grid_w);
     chartHistory.pv.push(data.pv_w);
     chartHistory.load.push(data.load_w || 0);
@@ -214,7 +231,7 @@
     chartHistory.sungrow_bat.push(sunBat);
     chartHistory.ferroamp_target.push(ferroTarget);
     chartHistory.sungrow_target.push(sunTarget);
-    chartHistory.timestamps.push(Date.now());
+    chartHistory.timestamps.push(now);
     chartHistory.e_import.push(t.import_wh || 0);
     chartHistory.e_export.push(t.export_wh || 0);
     chartHistory.e_pv.push(t.pv_wh || 0);
@@ -224,79 +241,115 @@
     if (chartHistory.grid.length > CHART_POINTS) {
       Object.keys(chartHistory).forEach(function(k) { chartHistory[k].shift(); });
     }
+    lastDataTs = now;
   }
 
   function renderChart() {
     var canvas = document.getElementById("power-chart");
     if (!canvas) return;
     var ctx = canvas.getContext("2d");
+    var dpr = window.devicePixelRatio || 1;
     var w = canvas.parentElement.clientWidth - 32;
     var h = 250;
-    canvas.width = w;
-    canvas.height = h;
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = w + "px";
+      canvas.style.height = h + "px";
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
 
     var pad = { top: 20, right: 10, bottom: 25, left: 55 };
     var plotW = w - pad.left - pad.right;
     var plotH = h - pad.top - pad.bottom;
 
+    var windowMs = CHART_RANGE_MS[chartRange] || CHART_RANGE_MS["5m"];
+    var now = Date.now();
+    var windowStart = now - windowMs;
+
     // Build series based on view
     var series;
     if (chartView === "energy") {
-      // Show cumulative Wh as kWh (divide by 1000)
       function toKwh(arr) { return arr.map(function(x){ return x / 1000; }); }
       series = [
-        { data: toKwh(chartHistory.e_import),     color: "#ef4444", width: 2, dash: [], name: "Import" },
-        { data: toKwh(chartHistory.e_export),     color: "#22c55e", width: 2, dash: [], name: "Export" },
-        { data: toKwh(chartHistory.e_pv),         color: "#10b981", width: 2, dash: [], name: "PV" },
-        { data: toKwh(chartHistory.e_charged),    color: "#3b82f6", width: 2, dash: [], name: "Charged" },
-        { data: toKwh(chartHistory.e_discharged), color: "#f59e0b", width: 2, dash: [], name: "Discharged" },
-        { data: toKwh(chartHistory.e_load),       color: "#e2e8f0", width: 2, dash: [], name: "Load" },
+        { data: toKwh(chartHistory.e_import),     color: "#ef4444", width: 2, dash: [], name: "Import",     fill: true },
+        { data: toKwh(chartHistory.e_export),     color: "#22c55e", width: 2, dash: [], name: "Export",     fill: true },
+        { data: toKwh(chartHistory.e_pv),         color: "#10b981", width: 2, dash: [], name: "PV",         fill: true },
+        { data: toKwh(chartHistory.e_charged),    color: "#3b82f6", width: 2, dash: [], name: "Charged",    fill: false },
+        { data: toKwh(chartHistory.e_discharged), color: "#f59e0b", width: 2, dash: [], name: "Discharged", fill: false },
+        { data: toKwh(chartHistory.e_load),       color: "#e2e8f0", width: 2, dash: [], name: "Load",       fill: false },
       ];
     } else {
       series = [
-        { data: chartHistory.grid,            color: "#ef4444", width: 2, dash: [], name: "Grid" },
-        { data: chartHistory.pv,              color: "#22c55e", width: 2, dash: [], name: "PV" },
-        { data: chartHistory.load,            color: "#e2e8f0", width: 1.5, dash: [], name: "Load" },
-        { data: chartHistory.ferroamp_bat,    color: "#f59e0b", width: 2, dash: [], name: "Ferroamp" },
-        { data: chartHistory.ferroamp_target, color: "#f59e0b", width: 1.5, dash: [6, 4], name: "Ferroamp tgt" },
-        { data: chartHistory.sungrow_bat,     color: "#8b5cf6", width: 2, dash: [], name: "Sungrow" },
-        { data: chartHistory.sungrow_target,  color: "#8b5cf6", width: 1.5, dash: [6, 4], name: "Sungrow tgt" },
+        { data: chartHistory.grid,            color: "#ef4444", width: 2,   dash: [],     name: "Grid",         fill: true },
+        { data: chartHistory.pv,              color: "#22c55e", width: 2,   dash: [],     name: "PV",           fill: true },
+        { data: chartHistory.load,            color: "#e2e8f0", width: 1.5, dash: [],     name: "Load",         fill: false },
+        { data: chartHistory.ferroamp_bat,    color: "#f59e0b", width: 2,   dash: [],     name: "Ferroamp",     fill: false },
+        { data: chartHistory.ferroamp_target, color: "#f59e0b", width: 1.5, dash: [6, 4], name: "Ferroamp tgt", fill: false },
+        { data: chartHistory.sungrow_bat,     color: "#8b5cf6", width: 2,   dash: [],     name: "Sungrow",      fill: false },
+        { data: chartHistory.sungrow_target,  color: "#8b5cf6", width: 1.5, dash: [6, 4], name: "Sungrow tgt",  fill: false },
       ];
     }
 
-    // Find y range across active series
-    var all = series.reduce(function(acc, s) { return acc.concat(s.data); }, []);
-    if (all.length === 0) return;
-    var yMin = Math.min(0, Math.min.apply(null, all));
-    var yMax = Math.max(100, Math.max.apply(null, all));
+    // Y range only across points within the visible time window
+    var visibleVals = [];
+    for (var k = 0; k < chartHistory.timestamps.length; k++) {
+      if (chartHistory.timestamps[k] >= windowStart) {
+        for (var s = 0; s < series.length; s++) {
+          if (series[s].data[k] != null) visibleVals.push(series[s].data[k]);
+        }
+      }
+    }
+    if (visibleVals.length === 0) {
+      // Empty state — draw axes + "waiting for data" hint
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#666";
+      ctx.font = "12px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("waiting for data...", w / 2, h / 2);
+      ctx.textAlign = "left";
+      return;
+    }
+    var yMin = Math.min(0, Math.min.apply(null, visibleVals));
+    var yMax = Math.max(100, Math.max.apply(null, visibleVals));
     var yRange = yMax - yMin || 1;
-    // Add 10% padding
     yMin -= yRange * 0.1;
     yMax += yRange * 0.1;
     yRange = yMax - yMin;
 
+    // Smooth y-range transitions to avoid jarring re-scales
+    if (chartLayout && chartLayout.yMin != null) {
+      var lerp = 0.18; // tighter = snappier; looser = smoother
+      yMin = chartLayout.yMin + (yMin - chartLayout.yMin) * lerp;
+      yMax = chartLayout.yMax + (yMax - chartLayout.yMax) * lerp;
+      yRange = yMax - yMin;
+    }
+
     ctx.clearRect(0, 0, w, h);
 
-    // Grid lines
-    ctx.strokeStyle = "#333";
+    // Clip to plot area so flowing lines don't draw over the y-axis labels
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(pad.left, pad.top, plotW, plotH);
+    ctx.clip();
+
+    // Grid lines (drawn inside clip so they only appear in the plot area)
+    ctx.strokeStyle = "#2a2a2a";
     ctx.lineWidth = 0.5;
     ctx.font = "11px monospace";
-    ctx.fillStyle = "#888";
     var steps = 5;
     for (var i = 0; i <= steps; i++) {
-      var yVal = yMin + (yRange * i / steps);
       var y = pad.top + plotH - (plotH * i / steps);
       ctx.beginPath();
       ctx.moveTo(pad.left, y);
       ctx.lineTo(w - pad.right, y);
       ctx.stroke();
-      ctx.fillText(chartView === "energy" ? yVal.toFixed(1) + " kWh" : formatW(yVal), 2, y + 4);
     }
 
     // Zero line
     if (yMin < 0 && yMax > 0) {
       var zeroY = pad.top + plotH * (1 - (0 - yMin) / yRange);
-      ctx.strokeStyle = "#555";
+      ctx.strokeStyle = "#444";
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
@@ -306,47 +359,119 @@
       ctx.setLineDash([]);
     }
 
-    // Draw the series chosen above
-    series.forEach(function (s) {
-      if (s.data.length < 2) return;
-      ctx.strokeStyle = s.color;
-      ctx.lineWidth = s.width;
-      ctx.setLineDash(s.dash);
-      ctx.beginPath();
-      for (var j = 0; j < s.data.length; j++) {
-        var x = pad.left + (plotW * j / (CHART_POINTS - 1));
-        var y = pad.top + plotH * (1 - (s.data[j] - yMin) / yRange);
-        if (j === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+    // Map ts → x. Points outside the window get clipped naturally.
+    function tsToX(ts) {
+      return pad.left + plotW * (ts - windowStart) / windowMs;
+    }
+    function valToY(v) {
+      return pad.top + plotH * (1 - (v - yMin) / yRange);
+    }
+
+    // Draw each series. Fill area under prominent ones with subtle gradient.
+    series.forEach(function (sr) {
+      if (sr.data.length < 2 || chartHistory.timestamps.length < 2) return;
+
+      // Build path through visible points (plus one off-screen on each side
+      // so the line continues to the edge instead of starting mid-canvas)
+      var pts = [];
+      for (var j = 0; j < sr.data.length; j++) {
+        var ts = chartHistory.timestamps[j];
+        if (sr.data[j] == null) continue;
+        pts.push({ x: tsToX(ts), y: valToY(sr.data[j]) });
       }
+      if (pts.length < 2) return;
+
+      if (sr.fill) {
+        var grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + plotH);
+        grad.addColorStop(0, hexAlpha(sr.color, 0.22));
+        grad.addColorStop(1, hexAlpha(sr.color, 0.0));
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pad.top + plotH);
+        for (var p = 0; p < pts.length; p++) ctx.lineTo(pts[p].x, pts[p].y);
+        ctx.lineTo(pts[pts.length - 1].x, pad.top + plotH);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      ctx.strokeStyle = sr.color;
+      ctx.lineWidth = sr.width;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.setLineDash(sr.dash);
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (var p2 = 1; p2 < pts.length; p2++) ctx.lineTo(pts[p2].x, pts[p2].y);
       ctx.stroke();
       ctx.setLineDash([]);
+
+      // Pulsing dot at the latest point — only for the bigger lines
+      if (sr.width >= 2 && pts.length > 0) {
+        var last = pts[pts.length - 1];
+        var pulsePhase = (now / 700) % (Math.PI * 2);
+        var pulseR = 3 + Math.sin(pulsePhase) * 1.2;
+        ctx.fillStyle = sr.color;
+        ctx.globalAlpha = 0.35;
+        ctx.beginPath();
+        ctx.arc(last.x, last.y, pulseR + 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.beginPath();
+        ctx.arc(last.x, last.y, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
     });
+
+    ctx.restore();
+
+    // Y-axis labels (outside clip so they're fully visible)
+    ctx.fillStyle = "#888";
+    ctx.font = "11px monospace";
+    for (var i2 = 0; i2 <= steps; i2++) {
+      var yVal = yMin + (yRange * i2 / steps);
+      var ly = pad.top + plotH - (plotH * i2 / steps);
+      ctx.fillText(chartView === "energy" ? yVal.toFixed(1) + " kWh" : formatW(yVal), 2, ly + 4);
+    }
 
     // Time labels
     ctx.fillStyle = "#666";
-    ctx.fillText("5m ago", pad.left, h - 5);
-    ctx.fillText("now", w - pad.right - 20, h - 5);
+    ctx.fillText(chartRange + " ago", pad.left, h - 5);
+    ctx.textAlign = "right";
+    ctx.fillText("now", w - pad.right, h - 5);
+    ctx.textAlign = "left";
 
-    // Store layout for hover tooltip
+    // Store layout for hover tooltip + animation loop
     chartLayout = {
       pad: pad, plotW: plotW, plotH: plotH, w: w, h: h,
       yMin: yMin, yMax: yMax, yRange: yRange,
+      windowStart: windowStart, windowMs: windowMs,
       series: series,
-      pointCount: Math.max.apply(null, series.map(function(s){ return s.data.length; }))
+      pointCount: chartHistory.timestamps.length
     };
 
-    // Draw hover overlay if active
     if (hoverIndex >= 0 && hoverIndex < chartLayout.pointCount) {
       drawHoverOverlay(ctx);
     }
+  }
+
+  // hex like "#ef4444" → "rgba(239,68,68,a)"
+  function hexAlpha(hex, alpha) {
+    var h = hex.replace("#", "");
+    if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+    var r = parseInt(h.substr(0,2), 16);
+    var g = parseInt(h.substr(2,2), 16);
+    var b = parseInt(h.substr(4,2), 16);
+    return "rgba(" + r + "," + g + "," + b + "," + alpha + ")";
   }
 
   function drawHoverOverlay(ctx) {
     if (!chartLayout) return;
     var l = chartLayout;
     var i = hoverIndex;
-    var x = l.pad.left + (l.plotW * i / Math.max(1, l.pointCount - 1));
+    // Map by timestamp (matches the time-anchored line drawing)
+    var ts = chartHistory.timestamps[i];
+    if (ts == null) return;
+    var x = l.pad.left + l.plotW * (ts - l.windowStart) / l.windowMs;
 
     // Vertical line
     ctx.strokeStyle = "rgba(255,255,255,0.3)";
@@ -597,7 +722,8 @@
         rangeButtons.querySelectorAll("button").forEach(function (b) {
           b.classList.toggle("active", b === e.target);
         });
-        loadHistory(e.target.dataset.range);
+        chartRange = e.target.dataset.range;
+        loadHistory(chartRange);
       }
     });
   }
@@ -640,23 +766,26 @@
     canvas.addEventListener("mousemove", function (e) {
       if (!chartLayout) return;
       var rect = canvas.getBoundingClientRect();
-      var scaleX = canvas.width / rect.width;
-      var x = (e.clientX - rect.left) * scaleX;
+      // canvas is sized in CSS px (we use devicePixelRatio inside),
+      // so no scaling needed here
+      var x = e.clientX - rect.left;
       var l = chartLayout;
       if (x < l.pad.left || x > l.pad.left + l.plotW) {
-        if (hoverIndex !== -1) { hoverIndex = -1; renderChart(); }
+        if (hoverIndex !== -1) hoverIndex = -1;
         return;
       }
-      var relX = x - l.pad.left;
-      var idx = Math.round(relX / l.plotW * (l.pointCount - 1));
-      idx = Math.max(0, Math.min(l.pointCount - 1, idx));
-      if (idx !== hoverIndex) {
-        hoverIndex = idx;
-        renderChart();
+      // Map x → timestamp → nearest point index
+      var hoverTs = l.windowStart + (x - l.pad.left) / l.plotW * l.windowMs;
+      var bestIdx = -1, bestDelta = Infinity;
+      for (var i = 0; i < chartHistory.timestamps.length; i++) {
+        var d = Math.abs(chartHistory.timestamps[i] - hoverTs);
+        if (d < bestDelta) { bestDelta = d; bestIdx = i; }
       }
+      hoverIndex = bestIdx;
+      // animation loop redraws — no manual call needed
     });
     canvas.addEventListener("mouseleave", function () {
-      if (hoverIndex !== -1) { hoverIndex = -1; renderChart(); }
+      hoverIndex = -1;
     });
   }
 
@@ -695,8 +824,29 @@
       .catch(function () { /* silent */ });
   }
 
+  // ---- Animation loop ----
+  // Drives the chart at ~30fps — points scroll left smoothly as time advances,
+  // pulse rings shimmer at the latest data point. Cards still update on poll.
+  var lastFrame = 0;
+  function animationFrame(ts) {
+    if (animating) {
+      // Throttle to ~30fps to keep CPU low — the visual feel is the same
+      if (ts - lastFrame > 33) {
+        renderChart();
+        lastFrame = ts;
+      }
+    }
+    requestAnimationFrame(animationFrame);
+  }
+
+  // Pause animation when tab is hidden (saves battery on background tabs)
+  document.addEventListener("visibilitychange", function () {
+    animating = !document.hidden;
+  });
+
   // ---- Init ----
-  loadHistory("5m");
+  loadHistory(chartRange);
   fetchStatus();
   setInterval(fetchStatus, POLL_INTERVAL);
+  requestAnimationFrame(animationFrame);
 })();
