@@ -388,13 +388,21 @@
         if (!res.ok) throw new Error("HTTP " + res.status);
         fetchStatus();
       })
-      .catch(function () { setConnected(false); });
+      .catch(function (e) {
+        console.warn("POST failed:", url, e);
+        // Don't flip connection state on POST failures —
+        // connection state reflects read polling, not write commands
+      });
   }
 
   function setConnected(ok) {
     if (ok) {
       connStatus.className = "conn-status connected";
       connStatus.title = "Connected";
+      // Clear any stale "Connection lost" text from previous failure
+      if (lastUpdate.textContent === "Connection lost") {
+        lastUpdate.textContent = "";
+      }
     } else {
       connStatus.className = "conn-status disconnected";
       connStatus.title = "Disconnected";
