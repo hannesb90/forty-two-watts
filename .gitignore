@@ -22,3 +22,6 @@ config.local.yaml
 *.db-journal
 *.db-wal
 *.db-shm
+/go/sim-ferroamp
+/go/sim-sungrow
+/go/forty-two-watts
