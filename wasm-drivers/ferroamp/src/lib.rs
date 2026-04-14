@@ -196,18 +196,20 @@ struct Command {
     power_w: Option<f64>,
 }
 
+/// Controller issues `power_w` in SITE convention (boundary-view):
+///   + = battery should CONSUME from the site bus (charge)
+///   − = battery should PUSH TO the site bus  (discharge)
 fn dispatch_battery(power_w: f64) -> i32 {
     let tid = format!("ems-{}", host::now_ms());
     let payload = if power_w > 0.0 {
-        // Charge — arg always positive
+        // Site +  = charge. Ferroamp "charge" command takes positive magnitude.
         format!(r#"{{"transId":"{}","cmd":{{"name":"charge","arg":{}}}}}"#,
             tid, power_w.floor() as i64)
     } else if power_w < 0.0 {
-        // Discharge — arg always positive, sign encoded in command name
+        // Site − = discharge. Arg is positive magnitude.
         format!(r#"{{"transId":"{}","cmd":{{"name":"discharge","arg":{}}}}}"#,
             tid, power_w.abs().floor() as i64)
     } else {
-        // Zero → revert to auto
         format!(r#"{{"transId":"{}","cmd":{{"name":"auto"}}}}"#, tid)
     };
     host::mqtt_pub("extapi/control/request", payload.as_bytes());
@@ -233,14 +235,18 @@ fn emit_meter(ehub: &serde_json::Value) {
 
 fn emit_pv(ehub: &serde_json::Value) {
     let ppv = extract_val(ehub, "ppv").unwrap_or(0.0);
-    // Convention: PV reported as negative (generation)
+    // Site convention (boundary view, + = flow INTO site via the grid meter):
+    // PV pushes energy TO the site, reducing import → NEGATIVE.
     let json = format!(r#"{{"type":"pv","w":{}}}"#, -ppv);
     host::emit(&json);
 }
 
 fn emit_battery(ehub: &serde_json::Value, eso: Option<&serde_json::Value>) {
     let pbat = extract_val(ehub, "pbat").unwrap_or(0.0);
-    // Ferroamp: positive = discharging. Our convention: positive = charging.
+    // Site convention (boundary view, + = flow INTO site via the grid meter):
+    //   battery CHARGING consumes from the site bus → positive (load)
+    //   battery DISCHARGING pushes energy TO the bus → negative
+    // Ferroamp natively uses + = discharging → negate for our convention.
     let w = -pbat;
 
     let mut soc_str = String::new();

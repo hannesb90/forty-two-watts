@@ -191,9 +191,10 @@ func TestIntegration_FerroampWasmDriverAgainstSimulator(t *testing.T) {
 		t.Logf("bat:   %.1fW SoC=%.3f", bat.RawW, *bat.SoC)
 	}
 
-	// PV should be negative (generation) around -2000W (our constant sim value)
+	// Site convention (boundary view, + = import): PV pushes TO site → NEGATIVE.
+	// Our constant sim value is 2000W of generation.
 	if pv.RawW > -500 {
-		t.Errorf("PV should be strongly negative (-2000ish), got %.1f", pv.RawW)
+		t.Errorf("PV should be strongly negative (~-2000; generation reduces site import), got %.1f", pv.RawW)
 	}
 	// Battery SoC should be set (~0.5 default)
 	if bat.SoC == nil {
@@ -202,29 +203,28 @@ func TestIntegration_FerroampWasmDriverAgainstSimulator(t *testing.T) {
 		t.Errorf("SoC out of expected range: %f", *bat.SoC)
 	}
 
-	// 6. Issue a command through the driver — should result in MQTT publish to
-	//    extapi/control/request, which the simulator's inline subscriber counts.
+	// 6. Issue a discharge command. Site convention (boundary view):
+	//    power_w < 0 = discharge (source, pushes TO site, reduces import).
 	beforeCmds := cmdCount.Load()
 	if err := drv.Command(ctx, []byte(`{"action":"battery","power_w":-1500}`)); err != nil {
 		t.Fatalf("command: %v", err)
 	}
-	// Give MQTT time to round-trip
 	time.Sleep(300 * time.Millisecond)
 	if cmdCount.Load() <= beforeCmds {
 		t.Errorf("driver command didn't trigger MQTT publish (before=%d, after=%d)",
 			beforeCmds, cmdCount.Load())
 	}
 
-	// 7. Poll more cycles and verify the battery actually responded to the discharge command
+	// 7. Poll more cycles, verify battery ACTUAL is negative (discharging)
 	for i := 0; i < 20; i++ {
 		_, _ = drv.Poll(ctx)
 		time.Sleep(150 * time.Millisecond)
 	}
 	bat = tel.Get("ferroamp", telemetry.DerBattery)
 	if bat == nil { t.Fatal("no battery reading after dispatch") }
-	t.Logf("after -1500W discharge command: bat.w=%.1fW (expect negative, discharging)", bat.RawW)
+	t.Logf("after -1500W discharge command: bat.w=%.1fW (site: − = discharging)", bat.RawW)
 	if bat.RawW > -200 {
-		t.Errorf("expected battery to be discharging after command, got %.1fW", bat.RawW)
+		t.Errorf("expected battery to be discharging (negative W) after command, got %.1fW", bat.RawW)
 	}
 
 	// 8. Driver health should be Ok with many ticks

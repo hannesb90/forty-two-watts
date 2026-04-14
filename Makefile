@@ -15,7 +15,7 @@
 RUSTUP_STABLE := /Users/fredde/.rustup/toolchains/stable-aarch64-apple-darwin/bin
 CARGO_WASM := PATH="$(RUSTUP_STABLE):$$PATH" cargo
 
-WASM_DRIVERS := ferroamp
+WASM_DRIVERS := ferroamp sungrow
 WASM_OUT_DIR := drivers-wasm
 
 help:
