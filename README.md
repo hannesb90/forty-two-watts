@@ -48,7 +48,7 @@ When your grid power is within 42W of the target, the system logs `Don't Panic` 
 - **1D Kalman Filter** per signal — auto-adapts to noise. Like the Babel Fish, but for watts
 - **Lua Driver System** — same drivers that run on the Sourceful Zap gateway. Drop in a `.lua` file, get a new device
 - **6 Dispatch Modes**: idle, self_consumption, peak_shaving, charge, priority, weighted
-- **Fuse Guard** — respects your breaker limits, because tripping a fuse is the grid equivalent of destroying Earth to build a hyperspace bypass
+- **Fuse Guard** — respects your breaker limits, because tripping a fuse is the grid equivalent of destroying Earth to build a hyperspace bypass. One of seven safety clamps; see [docs/clamping.md](docs/clamping.md) for the full set and why each matters.
 - **Slew Rate Limiter** — smooth power ramps, no step changes
 - **Home Assistant MQTT** — autodiscovery, sensor publishing, mode control via commands
 - **Web Dashboard** with **Settings UI** — real-time chart, plus a 6-tab settings modal that edits all config live

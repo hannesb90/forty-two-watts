@@ -12,6 +12,7 @@ Rust binary that loads Lua drivers (from Sourceful's srcful-device-support regis
 - **Host API**: The `host.*` namespace exposed to Lua drivers (MQTT, Modbus, decode helpers, telemetry emit)
 - **Telemetry Store**: Central shared state. Kalman-filtered per-signal smoothing (auto-adaptive noise), separate slow filter for load.
 - **Control Loop**: configurable interval (default 5s) reads telemetry, runs PI controller (Kp=0.5, Ki=0.1, anti-windup at ±3000W), applies slew limit, dispatches.
+- **Clamping**: the system has seven intentional clamps (fuse guard, slew rate, SoC floor, per-command cap, saturation curve, RLS parameter bounds, gain clamp). Each protects against a specific, named failure mode. **Required reading before modifying any dispatch code:** [docs/clamping.md](docs/clamping.md) — explains the "a clamp must protect against a quantifiable risk" principle and documents the saturation-curve self-reinforcing bug we shipped and fixed.
 - **Battery Models** (`battery_model.rs`): Per-battery ARX(1) model learned online via RLS. Provides τ (time constant), steady-state gain, saturation curves per SoC, deadband, hardware health score. See [docs/battery-models.md](docs/battery-models.md).
 - **Cascade controller** (in `control.rs`): When models present, each battery gets its own inner PI loop (auto-tuned from learned τ) + saturation clamp + inverse-model command transformation. Falls back to direct command when models missing.
 - **Self-tune** (`self_tune.rs`): Manual calibration sequence (3 min/battery) — drives each battery through known steps, fits ARX(1) from response, writes as baseline for health drift detection.
@@ -69,7 +70,7 @@ Tests live inline as `#[cfg(test)] mod tests` in each module. No `tests/` direct
 - `web/index.html`, `style.css`, `app.js` — Dashboard
 - `web/settings.js` — 6-tab settings modal (Control / Devices / Price / Weather / Batteries / Home Assistant). GETs `/api/config`, edits in place, POSTs back.
 - `web/models.js` — Battery Models panel + self-tune modal. Polls `/api/battery_models` every 3s, drives `/api/self_tune/*`.
-- `docs/` — `lua-drivers.md`, `host-api.md`, `ha-integration.md`, `configuration.md`, `battery-models.md`
+- `docs/` — `lua-drivers.md`, `host-api.md`, `ha-integration.md`, `configuration.md`, `battery-models.md`, `clamping.md`
 - `config.example.yaml` — Example configuration
 
 ## Dependencies
