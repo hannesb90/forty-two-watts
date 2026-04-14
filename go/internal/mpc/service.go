@@ -41,6 +41,24 @@ type Service struct {
 	Load  LoadPredictor  // optional — overrides flat BaseLoad
 	Price PricePredictor // optional — fills in future slots when day-ahead isn't published yet
 
+	// Reactive replan: when the actual PV or load drifts far from what
+	// the current plan slot expected, trigger an off-schedule replan
+	// so the schedule catches up with reality. Default thresholds
+	// (2 kW PV, 1.5 kW load) are a rough "something-meaningful-changed"
+	// signal — tuneable via config.
+	ReactiveInterval time.Duration // how often to check (default 10s)
+	MinReplanGap     time.Duration // cooldown between reactive replans (default 60s)
+	PVDivergenceW    float64       // |actual − predicted|; 0 disables
+	LoadDivergenceW  float64       // |actual − predicted|; 0 disables
+
+	// SiteMeter is the driver name whose meter reading represents the
+	// site's grid connection. Used by the reactive-replan check to
+	// derive actual load = grid − pv − bat. Empty = skip load check.
+	SiteMeter string
+
+	lastReplanAt time.Time
+	lastReason   string // "scheduled" | "reactive-pv" | "reactive-load" | "manual"
+
 	// ExportBonusOreKwh and ExportFeeOreKwh flow in from config.Price.
 	// Used to compute default ExportOrePerKWh when Params doesn't set it.
 	ExportBonusOreKwh float64
@@ -64,14 +82,18 @@ type Service struct {
 // New constructs a service. Caller wires it in main.go after store + telemetry.
 func New(st *state.Store, tl *telemetry.Store, zone string, p Params) *Service {
 	return &Service{
-		Store:    st,
-		Tele:     tl,
-		Zone:     zone,
-		Defaults: p,
-		Horizon:  48 * time.Hour, // always plan 48h — forecaster fills beyond day-ahead
-		Interval: 15 * time.Minute,
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		Store:            st,
+		Tele:             tl,
+		Zone:             zone,
+		Defaults:         p,
+		Horizon:          48 * time.Hour, // always plan 48h — forecaster fills beyond day-ahead
+		Interval:         15 * time.Minute,
+		ReactiveInterval: 10 * time.Second,
+		MinReplanGap:     60 * time.Second,
+		PVDivergenceW:    2000,
+		LoadDivergenceW:  1500,
+		stop:             make(chan struct{}),
+		done:             make(chan struct{}),
 	}
 }
 
@@ -150,9 +172,16 @@ func (s *Service) Stop() {
 
 func (s *Service) loop(ctx context.Context) {
 	defer close(s.done)
+	s.lastReason = "scheduled"
 	s.replan(ctx)
 	t := time.NewTicker(s.Interval)
 	defer t.Stop()
+	var reactiveTick <-chan time.Time
+	if s.ReactiveInterval > 0 && (s.PVDivergenceW > 0 || s.LoadDivergenceW > 0) {
+		rt := time.NewTicker(s.ReactiveInterval)
+		defer rt.Stop()
+		reactiveTick = rt.C
+	}
 	for {
 		select {
 		case <-s.stop:
@@ -160,9 +189,82 @@ func (s *Service) loop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			s.lastReason = "scheduled"
 			s.replan(ctx)
+		case <-reactiveTick:
+			s.checkDivergence(ctx)
 		}
 	}
+}
+
+// checkDivergence compares live PV + load to what the current slot of
+// the cached plan expected. If the gap exceeds thresholds AND the
+// cooldown has elapsed, trigger an off-schedule replan so the plan
+// catches up with reality.
+func (s *Service) checkDivergence(ctx context.Context) {
+	s.mu.RLock()
+	plan := s.last
+	last := s.lastReplanAt
+	s.mu.RUnlock()
+	if plan == nil || len(plan.Actions) == 0 {
+		return
+	}
+	if time.Since(last) < s.MinReplanGap {
+		return
+	}
+	// Find the slot covering now.
+	nowMs := time.Now().UnixMilli()
+	var slot *Action
+	for i := range plan.Actions {
+		a := &plan.Actions[i]
+		end := a.SlotStartMs + int64(a.SlotLenMin)*60*1000
+		if nowMs >= a.SlotStartMs && nowMs < end {
+			slot = a
+			break
+		}
+	}
+	if slot == nil {
+		return
+	}
+	// Live PV — sum all DerPV readings (site sign: negative = generating).
+	var pvW float64
+	for _, r := range s.Tele.ReadingsByType(telemetry.DerPV) {
+		pvW += r.SmoothedW
+	}
+	pvErr := math.Abs(pvW - slot.PVW)
+
+	// Live load = grid − pv − bat when we have a site meter wired.
+	var loadErr float64
+	if s.SiteMeter != "" {
+		if m := s.Tele.Get(s.SiteMeter, telemetry.DerMeter); m != nil {
+			var batW float64
+			for _, r := range s.Tele.ReadingsByType(telemetry.DerBattery) {
+				batW += r.SmoothedW
+			}
+			loadW := m.SmoothedW - pvW - batW
+			if loadW < 0 {
+				loadW = 0
+			}
+			loadErr = math.Abs(loadW - slot.LoadW)
+		}
+	}
+
+	reason := ""
+	switch {
+	case s.PVDivergenceW > 0 && pvErr > s.PVDivergenceW:
+		reason = "reactive-pv"
+	case s.LoadDivergenceW > 0 && loadErr > s.LoadDivergenceW:
+		reason = "reactive-load"
+	}
+	if reason == "" {
+		return
+	}
+	slog.Info("mpc: reactive replan",
+		"reason", reason,
+		"pv_gap_w", pvErr, "plan_pv_w", slot.PVW, "actual_pv_w", pvW,
+		"load_gap_w", loadErr, "plan_load_w", slot.LoadW)
+	s.lastReason = reason
+	s.replan(ctx)
 }
 
 // Replan recomputes the plan once using current prices + forecast + SoC.
@@ -239,12 +341,30 @@ func (s *Service) replan(_ context.Context) *Plan {
 
 	s.mu.Lock()
 	s.last = &plan
+	s.lastReplanAt = time.Now()
+	reason := s.lastReason
+	if reason == "" {
+		reason = "manual"
+	}
 	s.mu.Unlock()
 	slog.Info("mpc: replanned",
 		"slots", len(slots),
 		"soc_start", p.InitialSoCPct,
-		"cost_ore", plan.TotalCostOre)
+		"cost_ore", plan.TotalCostOre,
+		"reason", reason)
 	return &plan
+}
+
+// LastReplanInfo returns when the most recent replan ran and why.
+// Exposed for the UI so operators see "reactive-pv 12s ago" vs
+// "scheduled 11m ago" and understand why the plan changed.
+func (s *Service) LastReplanInfo() (time.Time, string) {
+	if s == nil {
+		return time.Time{}, ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastReplanAt, s.lastReason
 }
 
 // extendPricesWithForecast appends synthesized price rows for slots between

@@ -23,6 +23,7 @@
     state.prices = (p && p.items) || [];
     state.forecast = (f && f.items) || [];
     state.plan = (m && m.plan) || null;
+    state.planMeta = (m && m.meta) || null;
     state.enabled = {
       prices: p && p.enabled,
       forecast: f && f.enabled,
@@ -322,9 +323,16 @@
       } else {
         const hh = plan.horizon_slots * (plan.actions[0] ? plan.actions[0].slot_len_min : 15) / 60;
         const cost = plan.total_cost_ore / 100;
+        let suffix = '';
+        if (state.planMeta && state.planMeta.last_replan_ms) {
+          const age = Math.round((Date.now() - state.planMeta.last_replan_ms) / 1000);
+          const reason = state.planMeta.last_replan_reason || '';
+          const ageTxt = age < 60 ? `${age}s` : `${Math.round(age/60)}m`;
+          suffix = ` · replanned ${ageTxt} ago (${reason})`;
+        }
         summary.textContent =
           `${plan.mode} · ${hh.toFixed(0)}h horizon · ${plan.horizon_slots} slots · ` +
-          `SoC ${plan.initial_soc_pct.toFixed(0)}% → plan cost ${cost.toFixed(2)} SEK`;
+          `SoC ${plan.initial_soc_pct.toFixed(0)}% → ${cost.toFixed(2)} SEK${suffix}`;
       }
     }
   }

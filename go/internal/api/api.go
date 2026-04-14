@@ -654,11 +654,16 @@ func (s *Server) handleMPCPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plan := s.deps.MPC.Latest()
+	at, reason := s.deps.MPC.LastReplanInfo()
+	meta := map[string]any{
+		"last_replan_ms":     at.UnixMilli(),
+		"last_replan_reason": reason,
+	}
 	if plan == nil {
-		writeJSON(w, 200, map[string]any{"enabled": true, "plan": nil})
+		writeJSON(w, 200, map[string]any{"enabled": true, "plan": nil, "meta": meta})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"enabled": true, "plan": plan})
+	writeJSON(w, 200, map[string]any{"enabled": true, "plan": plan, "meta": meta})
 }
 
 func (s *Server) handleMPCReplan(w http.ResponseWriter, r *http.Request) {

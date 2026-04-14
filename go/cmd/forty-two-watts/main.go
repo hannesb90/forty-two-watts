@@ -306,6 +306,7 @@ func main() {
 		}
 		mpcSvc.Load = loadSvc.Predict
 		mpcSvc.Price = priceFc.Predict
+		mpcSvc.SiteMeter = cfg.SiteMeterDriver()
 		if cfg.Price != nil {
 			mpcSvc.ExportBonusOreKwh = cfg.Price.ExportBonusOreKwh
 			mpcSvc.ExportFeeOreKwh = cfg.Price.ExportFeeOreKwh
