@@ -22,6 +22,8 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/battery"
 	"github.com/frahlg/forty-two-watts/go/internal/config"
 	"github.com/frahlg/forty-two-watts/go/internal/control"
+	"github.com/frahlg/forty-two-watts/go/internal/forecast"
+	"github.com/frahlg/forty-two-watts/go/internal/prices"
 	"github.com/frahlg/forty-two-watts/go/internal/selftune"
 	"github.com/frahlg/forty-two-watts/go/internal/state"
 	"github.com/frahlg/forty-two-watts/go/internal/telemetry"
@@ -46,6 +48,10 @@ type Deps struct {
 	DtS             float64 // control interval seconds (for model τ / age displays)
 	SaveConfig      func(path string, c *config.Config) error // injection for testability
 	WebDir          string // static assets root (default "web")
+
+	// Optional: spot prices + weather forecast services. Nil if disabled.
+	Prices   *prices.Service
+	Forecast *forecast.Service
 
 	Version string
 }
@@ -87,6 +93,8 @@ func (s *Server) routes() {
 	s.handle("GET  /api/self_tune/status",    s.handleSelfTuneStatus)
 	s.handle("POST /api/self_tune/cancel",    s.handleSelfTuneCancel)
 	s.handle("GET  /api/history",             s.handleHistory)
+	s.handle("GET  /api/prices",              s.handlePrices)
+	s.handle("GET  /api/forecast",            s.handleForecast)
 
 	// ---- Static web UI ----
 	// Everything not matched above falls through to the static server.
@@ -527,6 +535,70 @@ func parseRange(s string) int64 {
 	case "3d": return 3 * 24 * 60 * 60 * 1000
 	}
 	return 5 * 60 * 1000
+}
+
+// ---- /api/prices ----
+//
+// Query params:
+//   range=24h|48h|3d  — window starting NOW unless since_ms given
+//   since_ms=…        — explicit start
+//   until_ms=…        — explicit end (default: now + 48h)
+//
+// Response: {"zone": "...", "items": [{slot_ts_ms, slot_len_min, spot_ore_kwh, total_ore_kwh, ...}]}
+func (s *Server) handlePrices(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Prices == nil {
+		writeJSON(w, 200, map[string]any{"items": []any{}, "enabled": false})
+		return
+	}
+	q := r.URL.Query()
+	nowMs := time.Now().UnixMilli()
+	var since, until int64
+	since = nowMs - 1*3600*1000 // default 1h lookback
+	until = nowMs + 48*3600*1000 // default 48h lookahead
+	if v := q.Get("since_ms"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil { since = n }
+	}
+	if v := q.Get("until_ms"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil { until = n }
+	}
+	if rng := q.Get("range"); rng != "" {
+		since = nowMs
+		until = nowMs + parseRange(rng)
+	}
+	rows, err := s.deps.Prices.Load(since, until)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"zone":    s.deps.Prices.Zone,
+		"items":   rows,
+		"enabled": true,
+	})
+}
+
+// ---- /api/forecast ----
+//
+// Query params: range=24h|48h|3d (default 48h lookahead).
+// Response: {"items": [{slot_ts_ms, cloud_cover_pct, temp_c, pv_w_estimated, ...}]}
+func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Forecast == nil {
+		writeJSON(w, 200, map[string]any{"items": []any{}, "enabled": false})
+		return
+	}
+	q := r.URL.Query()
+	nowMs := time.Now().UnixMilli()
+	since, until := nowMs-time.Hour.Milliseconds(), nowMs+48*3600*1000
+	if rng := q.Get("range"); rng != "" {
+		since = nowMs
+		until = nowMs + parseRange(rng)
+	}
+	rows, err := s.deps.Forecast.Load(since, until)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": rows, "enabled": true})
 }
 
 // ---- static ----

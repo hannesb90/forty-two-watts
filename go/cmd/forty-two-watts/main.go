@@ -25,9 +25,11 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/configreload"
 	"github.com/frahlg/forty-two-watts/go/internal/control"
 	"github.com/frahlg/forty-two-watts/go/internal/drivers"
+	"github.com/frahlg/forty-two-watts/go/internal/forecast"
 	"github.com/frahlg/forty-two-watts/go/internal/ha"
 	mqttcli "github.com/frahlg/forty-two-watts/go/internal/mqtt"
 	modbuscli "github.com/frahlg/forty-two-watts/go/internal/modbus"
+	"github.com/frahlg/forty-two-watts/go/internal/prices"
 	"github.com/frahlg/forty-two-watts/go/internal/selftune"
 	"github.com/frahlg/forty-two-watts/go/internal/state"
 	"github.com/frahlg/forty-two-watts/go/internal/telemetry"
@@ -164,6 +166,33 @@ func main() {
 		defer watcher.Stop()
 	}
 
+	// ---- Spot prices + weather forecast (optional, nil if not configured) ----
+	priceSvc := prices.FromConfig(cfg.Price, st)
+	if priceSvc != nil {
+		priceSvc.Start(ctx)
+		defer priceSvc.Stop()
+		slog.Info("price service started", "zone", priceSvc.Zone, "provider", priceSvc.Provider.Name())
+	}
+
+	// Sum rated PV from all drivers for the forecast estimator
+	ratedPVW := 0.0
+	for _, d := range cfg.Drivers {
+		if d.BatteryCapacityWh > 0 {
+			// crude: use battery capacity / 3 as rated PV proxy
+			// users should set a real value via cfg.Weather if they care
+			ratedPVW += d.BatteryCapacityWh / 3
+		}
+	}
+	if ratedPVW == 0 { ratedPVW = 10000 } // 10 kW default
+	forecastSvc := forecast.FromConfig(cfg.Weather, ratedPVW, st,
+		"forty-two-watts/"+Version+" github.com/frahlg/forty-two-watts")
+	if forecastSvc != nil {
+		forecastSvc.Start(ctx)
+		defer forecastSvc.Stop()
+		slog.Info("forecast service started", "provider", forecastSvc.Provider.Name(),
+			"lat", forecastSvc.Lat, "lon", forecastSvc.Lon, "rated_pv_w", ratedPVW)
+	}
+
 	// ---- Start HTTP API ----
 	deps := &api.Deps{
 		Tel: tel, Ctrl: ctrl, CtrlMu: ctrlMu,
@@ -175,6 +204,8 @@ func main() {
 		DtS:        float64(cfg.Site.ControlIntervalS),
 		SaveConfig: config.SaveAtomic,
 		WebDir:     *webDir,
+		Prices:     priceSvc,
+		Forecast:   forecastSvc,
 		Version:    Version,
 	}
 	srv := api.New(deps)

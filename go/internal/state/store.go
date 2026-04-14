@@ -99,6 +99,35 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_warm_ts ON history_warm(ts_ms)`,
 		`CREATE INDEX IF NOT EXISTS idx_cold_ts ON history_cold(ts_ms)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts_ms DESC)`,
+
+		// Spot prices — one row per time slot per zone.
+		// Slot duration is provider-dependent: NordPool went to 15-min PTU
+		// in late 2025; ENTSOE is mixed. The table just stores timestamps —
+		// slot_len_min tells consumers what duration each row represents.
+		`CREATE TABLE IF NOT EXISTS prices (
+			zone TEXT NOT NULL,
+			slot_ts_ms INTEGER NOT NULL,
+			slot_len_min INTEGER NOT NULL DEFAULT 60,
+			spot_ore_kwh REAL NOT NULL,
+			total_ore_kwh REAL NOT NULL,
+			source TEXT NOT NULL,
+			fetched_at_ms INTEGER NOT NULL,
+			PRIMARY KEY (zone, slot_ts_ms)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_prices_slot ON prices(slot_ts_ms)`,
+
+		// Weather + PV forecasts — one row per hour (met.no/openweather
+		// both default to hourly; can downsample to 15-min if needed later).
+		`CREATE TABLE IF NOT EXISTS forecasts (
+			slot_ts_ms INTEGER PRIMARY KEY,
+			slot_len_min INTEGER NOT NULL DEFAULT 60,
+			cloud_cover_pct REAL,
+			temp_c REAL,
+			solar_wm2 REAL,
+			pv_w_estimated REAL,
+			source TEXT NOT NULL,
+			fetched_at_ms INTEGER NOT NULL
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -358,4 +387,127 @@ func (s *Store) Prune(ctx context.Context) error {
 	}
 
 	return tx.Commit()
+}
+
+// ---- Prices ----
+
+// PricePoint is one time-slot's spot price row. Slot length varies by source:
+// NordPool/elprisetjustnu is 15 min since late 2025; ENTSOE is mostly still
+// hourly. Consumers should honor SlotLenMin when plotting or aggregating.
+type PricePoint struct {
+	Zone        string  `json:"zone"`
+	SlotTsMs    int64   `json:"slot_ts_ms"`
+	SlotLenMin  int     `json:"slot_len_min"`
+	SpotOreKwh  float64 `json:"spot_ore_kwh"`
+	TotalOreKwh float64 `json:"total_ore_kwh"`
+	Source      string  `json:"source"`
+	FetchedAtMs int64   `json:"fetched_at_ms"`
+}
+
+// SavePrices upserts a batch of price rows (slot duration per-row).
+func (s *Store) SavePrices(pts []PricePoint) error {
+	if len(pts) == 0 { return nil }
+	tx, err := s.db.Begin()
+	if err != nil { return err }
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`INSERT INTO prices
+		(zone, slot_ts_ms, slot_len_min, spot_ore_kwh, total_ore_kwh, source, fetched_at_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (zone, slot_ts_ms) DO UPDATE SET
+			slot_len_min = excluded.slot_len_min,
+			spot_ore_kwh = excluded.spot_ore_kwh,
+			total_ore_kwh = excluded.total_ore_kwh,
+			source = excluded.source,
+			fetched_at_ms = excluded.fetched_at_ms`)
+	if err != nil { return err }
+	defer stmt.Close()
+	for _, p := range pts {
+		slot := p.SlotLenMin
+		if slot <= 0 { slot = 60 }
+		if _, err := stmt.Exec(p.Zone, p.SlotTsMs, slot, p.SpotOreKwh, p.TotalOreKwh, p.Source, p.FetchedAtMs); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// LoadPrices returns prices for zone in [sinceMs, untilMs], ordered ascending.
+func (s *Store) LoadPrices(zone string, sinceMs, untilMs int64) ([]PricePoint, error) {
+	rows, err := s.db.Query(`SELECT zone, slot_ts_ms, slot_len_min, spot_ore_kwh, total_ore_kwh, source, fetched_at_ms
+		FROM prices
+		WHERE zone = ? AND slot_ts_ms BETWEEN ? AND ?
+		ORDER BY slot_ts_ms ASC`, zone, sinceMs, untilMs)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	out := []PricePoint{}
+	for rows.Next() {
+		var p PricePoint
+		if err := rows.Scan(&p.Zone, &p.SlotTsMs, &p.SlotLenMin, &p.SpotOreKwh, &p.TotalOreKwh, &p.Source, &p.FetchedAtMs); err != nil {
+			return out, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ---- Forecasts ----
+
+// ForecastPoint is one slot's weather + derived PV estimate.
+type ForecastPoint struct {
+	SlotTsMs      int64    `json:"slot_ts_ms"`
+	SlotLenMin    int      `json:"slot_len_min"`
+	CloudCoverPct *float64 `json:"cloud_cover_pct,omitempty"`
+	TempC         *float64 `json:"temp_c,omitempty"`
+	SolarWm2      *float64 `json:"solar_wm2,omitempty"`
+	PVWEstimated  *float64 `json:"pv_w_estimated,omitempty"`
+	Source        string   `json:"source"`
+	FetchedAtMs   int64    `json:"fetched_at_ms"`
+}
+
+// SaveForecasts upserts a batch of forecast rows.
+func (s *Store) SaveForecasts(pts []ForecastPoint) error {
+	if len(pts) == 0 { return nil }
+	tx, err := s.db.Begin()
+	if err != nil { return err }
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`INSERT INTO forecasts
+		(slot_ts_ms, slot_len_min, cloud_cover_pct, temp_c, solar_wm2, pv_w_estimated, source, fetched_at_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (slot_ts_ms) DO UPDATE SET
+			slot_len_min = excluded.slot_len_min,
+			cloud_cover_pct = excluded.cloud_cover_pct,
+			temp_c = excluded.temp_c,
+			solar_wm2 = excluded.solar_wm2,
+			pv_w_estimated = excluded.pv_w_estimated,
+			source = excluded.source,
+			fetched_at_ms = excluded.fetched_at_ms`)
+	if err != nil { return err }
+	defer stmt.Close()
+	for _, p := range pts {
+		slot := p.SlotLenMin
+		if slot <= 0 { slot = 60 }
+		if _, err := stmt.Exec(p.SlotTsMs, slot, p.CloudCoverPct, p.TempC, p.SolarWm2, p.PVWEstimated, p.Source, p.FetchedAtMs); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// LoadForecasts returns forecasts in [sinceMs, untilMs], ordered ascending.
+func (s *Store) LoadForecasts(sinceMs, untilMs int64) ([]ForecastPoint, error) {
+	rows, err := s.db.Query(`SELECT slot_ts_ms, slot_len_min, cloud_cover_pct, temp_c, solar_wm2, pv_w_estimated, source, fetched_at_ms
+		FROM forecasts
+		WHERE slot_ts_ms BETWEEN ? AND ?
+		ORDER BY slot_ts_ms ASC`, sinceMs, untilMs)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	out := []ForecastPoint{}
+	for rows.Next() {
+		var p ForecastPoint
+		if err := rows.Scan(&p.SlotTsMs, &p.SlotLenMin, &p.CloudCoverPct, &p.TempC, &p.SolarWm2, &p.PVWEstimated, &p.Source, &p.FetchedAtMs); err != nil {
+			return out, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
