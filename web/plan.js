@@ -170,6 +170,27 @@
     }
     ctx.stroke();
 
+    // Load forecast from the plan's per-slot predictions (twin-driven).
+    // Rendered above the PV curve as a pale-yellow dashed line so we can
+    // see what the optimizer expects the house to consume each slot.
+    if (plan && plan.actions && plan.actions.length) {
+      ctx.strokeStyle = '#fde68a';
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([4, 5]);
+      ctx.beginPath();
+      let f2 = true;
+      for (const a of plan.actions) {
+        if (a.slot_start_ms > tMax) break;
+        if (a.load_w == null) continue;
+        const x = xScale(a.slot_start_ms);
+        const y = powerY(a.load_w);
+        if (f2) { ctx.moveTo(x, y); f2 = false; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     // Power zero-line
     ctx.strokeStyle = 'rgba(255,255,255,0.25)';
     ctx.lineWidth = 1;

@@ -24,9 +24,7 @@
   var chartHistory = {
     grid: [],
     pv: [],
-    pv_forecast: [], // twin prediction per sample — dashed overlay
     load: [],
-    load_forecast: [], // twin prediction per sample — dashed overlay
     ferroamp_bat: [],
     sungrow_bat: [],
     ferroamp_target: [],
@@ -40,6 +38,19 @@
     e_discharged: [],
     e_load: [],
   };
+
+  // Latest MPC plan — refreshed every 30s. Drives the forward-looking
+  // dashed PV + Load forecast on the live chart (right-hand segment
+  // extending past "now").
+  var chartPlan = null;
+  function refreshChartPlan() {
+    fetch("/api/mpc/plan")
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (j && j.plan) chartPlan = j.plan; })
+      .catch(function () {});
+  }
+  refreshChartPlan();
+  setInterval(refreshChartPlan, 30000);
   var chartLayout = null;
   var hoverIndex = -1;
   var chartView = "power"; // "power" or "energy"
@@ -251,9 +262,7 @@
 
     chartHistory.grid.push(data.grid_w);
     chartHistory.pv.push(data.pv_w);
-    chartHistory.pv_forecast.push(data.pv_w_predicted != null ? data.pv_w_predicted : null);
     chartHistory.load.push(data.load_w || 0);
-    chartHistory.load_forecast.push(data.load_w_predicted != null ? data.load_w_predicted : null);
     chartHistory.ferroamp_bat.push(ferroBat);
     chartHistory.sungrow_bat.push(sunBat);
     chartHistory.ferroamp_target.push(ferroTarget);
@@ -295,6 +304,12 @@
     var windowMs = CHART_RANGE_MS[chartRange] || CHART_RANGE_MS["5m"];
     var now = Date.now();
     var windowStart = now - windowMs;
+    // Forward-looking forecast segment. Min 15 min so at least one 15-min
+    // plan slot is visible even at the 5m range; otherwise 30% of window
+    // so long ranges don't get dominated by future space.
+    var futureMs = Math.max(windowMs * 0.3, 15 * 60 * 1000);
+    var windowEnd = now + futureMs;
+    var totalMs = windowEnd - windowStart;
 
     // Build series based on view
     var series;
@@ -312,11 +327,7 @@
       series = [
         { data: chartHistory.grid,            color: "#ef4444", width: 2,   dash: [],     name: "Grid",         fill: true },
         { data: chartHistory.pv,              color: "#22c55e", width: 2,   dash: [],     name: "PV",           fill: true },
-        // PV twin: lighter green + distinct dash + thicker so you can see
-        // the gap between predicted and actual even when they're close.
-        { data: chartHistory.pv_forecast,     color: "#86efac", width: 2,   dash: [4, 6], name: "PV twin",      fill: false },
         { data: chartHistory.load,            color: "#e2e8f0", width: 1.5, dash: [],     name: "Load",         fill: false },
-        { data: chartHistory.load_forecast,   color: "#fde68a", width: 2,   dash: [4, 6], name: "Load twin",    fill: false },
         { data: chartHistory.ferroamp_bat,    color: "#f59e0b", width: 2,   dash: [],     name: "Ferroamp",     fill: false },
         { data: chartHistory.ferroamp_target, color: "#f59e0b", width: 1.5, dash: [6, 4], name: "Ferroamp tgt", fill: false },
         { data: chartHistory.sungrow_bat,     color: "#8b5cf6", width: 2,   dash: [],     name: "Sungrow",      fill: false },
@@ -331,6 +342,16 @@
         for (var s = 0; s < series.length; s++) {
           if (series[s].data[k] != null) visibleVals.push(series[s].data[k]);
         }
+      }
+    }
+    // Include forecast values from plan so future segment isn't off-scale
+    if (chartPlan && chartPlan.actions && chartView === "power") {
+      for (var pi = 0; pi < chartPlan.actions.length; pi++) {
+        var a = chartPlan.actions[pi];
+        var aEnd = a.slot_start_ms + a.slot_len_min * 60000;
+        if (aEnd < windowStart || a.slot_start_ms > windowEnd) continue;
+        if (a.pv_w != null) visibleVals.push(a.pv_w);
+        if (a.load_w != null) visibleVals.push(a.load_w);
       }
     }
     if (visibleVals.length === 0) {
@@ -392,9 +413,9 @@
       ctx.setLineDash([]);
     }
 
-    // Map ts → x. Points outside the window get clipped naturally.
+    // Map ts → x. Spans the whole chart including the future segment.
     function tsToX(ts) {
-      return pad.left + plotW * (ts - windowStart) / windowMs;
+      return pad.left + plotW * (ts - windowStart) / totalMs;
     }
     function valToY(v) {
       return pad.top + plotH * (1 - (v - yMin) / yRange);
@@ -447,6 +468,54 @@
         liveTips.push({ x: pts[pts.length - 1].x, y: pts[pts.length - 1].y, color: sr.color });
       }
     });
+
+    // ---- Forward-looking forecast (dashed PV + load from the plan) ----
+    // Drawn AFTER the actual series so dashes sit on top. Uses the 15-min
+    // plan slots as a step-wise curve extending from "now" to the right
+    // edge of the chart. Only rendered in power view.
+    if (chartView === "power" && chartPlan && chartPlan.actions) {
+      var drawForecast = function (field, color) {
+        var pts = [];
+        for (var i = 0; i < chartPlan.actions.length; i++) {
+          var a = chartPlan.actions[i];
+          var aEnd = a.slot_start_ms + a.slot_len_min * 60000;
+          if (aEnd < now) continue; // past slot
+          if (a.slot_start_ms > windowEnd) break;
+          var sStart = Math.max(a.slot_start_ms, now);
+          var sEnd = Math.min(aEnd, windowEnd);
+          pts.push({ x: tsToX(sStart), y: valToY(a[field]) });
+          pts.push({ x: tsToX(sEnd),   y: valToY(a[field]) });
+        }
+        if (pts.length < 2) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.lineCap = "butt";
+        ctx.setLineDash([4, 6]);
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (var p3 = 1; p3 < pts.length; p3++) ctx.lineTo(pts[p3].x, pts[p3].y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      };
+      drawForecast("pv_w",   "#86efac"); // pale green
+      drawForecast("load_w", "#fde68a"); // pale yellow
+    }
+
+    // ---- Now-line separator (between past actuals and future forecast) ----
+    var xNow = tsToX(now);
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(xNow, pad.top);
+    ctx.lineTo(xNow, pad.top + plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("now", xNow, pad.top - 4);
+    ctx.textAlign = "left";
 
     ctx.restore();
 
