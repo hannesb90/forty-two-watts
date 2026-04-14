@@ -25,6 +25,7 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/forecast"
 	"github.com/frahlg/forty-two-watts/go/internal/mpc"
 	"github.com/frahlg/forty-two-watts/go/internal/prices"
+	"github.com/frahlg/forty-two-watts/go/internal/pvmodel"
 	"github.com/frahlg/forty-two-watts/go/internal/selftune"
 	"github.com/frahlg/forty-two-watts/go/internal/state"
 	"github.com/frahlg/forty-two-watts/go/internal/telemetry"
@@ -56,6 +57,9 @@ type Deps struct {
 
 	// Optional: MPC planner. Nil if disabled.
 	MPC *mpc.Service
+
+	// Optional: PV digital-twin self-learner.
+	PVModel *pvmodel.Service
 
 	Version string
 }
@@ -101,6 +105,8 @@ func (s *Server) routes() {
 	s.handle("GET  /api/forecast",            s.handleForecast)
 	s.handle("GET  /api/mpc/plan",            s.handleMPCPlan)
 	s.handle("POST /api/mpc/replan",          s.handleMPCReplan)
+	s.handle("GET  /api/pvmodel",             s.handlePVModel)
+	s.handle("POST /api/pvmodel/reset",       s.handlePVModelReset)
 
 	// ---- Static web UI ----
 	// Everything not matched above falls through to the static server.
@@ -629,6 +635,35 @@ func (s *Server) handleMPCReplan(w http.ResponseWriter, r *http.Request) {
 	}
 	plan := s.deps.MPC.Replan(r.Context())
 	writeJSON(w, 200, map[string]any{"enabled": true, "plan": plan})
+}
+
+// ---- PV digital twin ----
+
+func (s *Server) handlePVModel(w http.ResponseWriter, r *http.Request) {
+	if s.deps.PVModel == nil {
+		writeJSON(w, 200, map[string]any{"enabled": false})
+		return
+	}
+	m := s.deps.PVModel.Model()
+	writeJSON(w, 200, map[string]any{
+		"enabled":       true,
+		"samples":       m.Samples,
+		"mae_w":         m.MAE,
+		"rated_w":       m.RatedW,
+		"quality":       m.Quality(),
+		"last_ms":       m.LastMs,
+		"forgetting":    m.Forgetting,
+		"beta":          m.Beta,
+	})
+}
+
+func (s *Server) handlePVModelReset(w http.ResponseWriter, r *http.Request) {
+	if s.deps.PVModel == nil {
+		writeJSON(w, 400, map[string]string{"error": "pvmodel disabled"})
+		return
+	}
+	s.deps.PVModel.Reset()
+	writeJSON(w, 200, map[string]string{"status": "reset"})
 }
 
 // ---- static ----

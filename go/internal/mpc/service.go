@@ -11,6 +11,12 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/telemetry"
 )
 
+// PVPredictor lets the MPC plug in a learned PV predictor (the digital
+// twin) without importing its package. Implemented by
+// *pvmodel.Service.Predict. Leave nil to use the naive forecast stored
+// in the DB.
+type PVPredictor func(t time.Time, cloudPct float64) float64
+
 // Service wires the optimizer to the rest of the stack: pulls prices +
 // forecast from the SQLite store, reads current SoC from the telemetry
 // store, and re-plans on a ticker. The latest plan is cached.
@@ -21,6 +27,12 @@ type Service struct {
 	BaseLoad float64 // baseline household load (W). 0 disables load assumption.
 	Horizon  time.Duration
 	Interval time.Duration
+	PV       PVPredictor // optional — overrides stored pv_w_estimated
+
+	// ExportBonusOreKwh and ExportFeeOreKwh flow in from config.Price.
+	// Used to compute default ExportOrePerKWh when Params doesn't set it.
+	ExportBonusOreKwh float64
+	ExportFeeOreKwh   float64
 
 	Defaults Params
 
@@ -114,7 +126,7 @@ func (s *Service) replan(_ context.Context) *Plan {
 		// continue without PV forecast
 	}
 
-	slots := buildSlots(prices, forecasts, s.BaseLoad, now.UnixMilli())
+	slots := buildSlots(prices, forecasts, s.BaseLoad, now.UnixMilli(), s.PV)
 	if len(slots) == 0 {
 		return nil
 	}
@@ -134,14 +146,20 @@ func (s *Service) replan(_ context.Context) *Plan {
 		}
 		p.TerminalSoCPrice = sum / float64(len(prices))
 	}
-	// Default export revenue: mean spot (no VAT, no grid tariff) — what
-	// most Swedish retailers credit for surplus PV/battery export.
+	// Default export revenue: mean spot (no VAT, no grid tariff) plus
+	// optional ExportBonusOreKwh (e.g. retailer premium / tax reduction)
+	// minus ExportFeeOreKwh (DSO feed-in fee, if any). ExportOrePerKWh
+	// in Params overrides all of this if set explicitly.
 	if p.ExportOrePerKWh <= 0 {
 		var sum float64
 		for _, pr := range prices {
 			sum += pr.SpotOreKwh
 		}
-		p.ExportOrePerKWh = sum / float64(len(prices))
+		meanSpot := sum / float64(len(prices))
+		p.ExportOrePerKWh = meanSpot + s.ExportBonusOreKwh - s.ExportFeeOreKwh
+		if p.ExportOrePerKWh < 0 {
+			p.ExportOrePerKWh = 0
+		}
 	}
 
 	plan := Optimize(slots, p)
@@ -159,7 +177,13 @@ func (s *Service) replan(_ context.Context) *Plan {
 // buildSlots joins price rows with forecast rows by start time. Prices drive
 // slot count + duration; forecast PV is interpolated forward (last valid
 // value carries) because forecast is usually hourly while prices are 15-min.
-func buildSlots(prices []state.PricePoint, forecasts []state.ForecastPoint, baseLoad float64, nowMs int64) []Slot {
+//
+// If `pv` is non-nil, the planner uses the learned twin's prediction
+// (fed with the forecast's cloud cover) instead of the naive pv_w_estimated
+// that the forecast service stored at fetch time. This lets the model
+// learn system-specific orientation/shading/soiling and drive planning
+// off the better signal without re-fetching weather.
+func buildSlots(prices []state.PricePoint, forecasts []state.ForecastPoint, baseLoad float64, nowMs int64, pv PVPredictor) []Slot {
 	out := make([]Slot, 0, len(prices))
 	for _, pr := range prices {
 		slotLen := pr.SlotLenMin
@@ -170,7 +194,13 @@ func buildSlots(prices []state.PricePoint, forecasts []state.ForecastPoint, base
 		if slotEnd <= nowMs {
 			continue // past slot
 		}
-		pvW := lookupPV(forecasts, pr.SlotTsMs)
+		var pvW float64
+		if pv != nil {
+			cloud := lookupCloud(forecasts, pr.SlotTsMs)
+			pvW = pv(time.UnixMilli(pr.SlotTsMs), cloud)
+		} else {
+			pvW = lookupPV(forecasts, pr.SlotTsMs)
+		}
 		out = append(out, Slot{
 			StartMs:  pr.SlotTsMs,
 			LenMin:   slotLen,
@@ -180,6 +210,37 @@ func buildSlots(prices []state.PricePoint, forecasts []state.ForecastPoint, base
 		})
 	}
 	return out
+}
+
+// lookupCloud returns the cloud cover (%) for the forecast row covering
+// `ts`, falling back to the nearest neighbour. 50% is the neutral
+// prior if no forecast is available at all.
+func lookupCloud(forecasts []state.ForecastPoint, ts int64) float64 {
+	if len(forecasts) == 0 {
+		return 50
+	}
+	for i, f := range forecasts {
+		slotLen := f.SlotLenMin
+		if slotLen <= 0 {
+			slotLen = 60
+		}
+		end := f.SlotTsMs + int64(slotLen)*60*1000
+		if ts >= f.SlotTsMs && ts < end {
+			if f.CloudCoverPct != nil {
+				return *f.CloudCoverPct
+			}
+			return 50
+		}
+		if ts < f.SlotTsMs && i > 0 {
+			if prev := forecasts[i-1]; prev.CloudCoverPct != nil {
+				return *prev.CloudCoverPct
+			}
+		}
+	}
+	if last := forecasts[len(forecasts)-1]; last.CloudCoverPct != nil {
+		return *last.CloudCoverPct
+	}
+	return 50
 }
 
 // lookupPV finds the forecast row whose slot covers ts and returns its PV

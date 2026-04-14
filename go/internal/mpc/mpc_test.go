@@ -218,6 +218,67 @@ func TestEmptySlotsReturnsEmptyPlan(t *testing.T) {
 
 // ---- Mode enforcement at boundary ----
 
+// ---- Tariffs + export bonus ----
+
+func TestImportTariffRaisesMPCImportCost(t *testing.T) {
+	// Tariff-free vs heavy-tariff day: same spot, very different consumer
+	// prices. cheap_charge should charge LESS aggressively when import
+	// tariff is high (because grid import is more expensive).
+	makeSlots := func(total float64) []Slot {
+		s := make([]Slot, 4)
+		for i := range s {
+			s[i] = Slot{
+				StartMs:  int64(i) * 3600 * 1000,
+				LenMin:   60,
+				PriceOre: total,
+				LoadW:    500,
+				PVW:      0,
+			}
+		}
+		return s
+	}
+	p := baseParams(ModeCheapCharge)
+	p.InitialSoCPct = 30
+	p.TerminalSoCPrice = 100
+
+	cheap := Optimize(makeSlots(50), p)  // low consumer price — grid-charge
+	tariff := Optimize(makeSlots(300), p) // high consumer price — hold off
+
+	var chgCheap, chgTariff float64
+	for _, a := range cheap.Actions {
+		chgCheap += math.Max(a.BatteryW, 0)
+	}
+	for _, a := range tariff.Actions {
+		chgTariff += math.Max(a.BatteryW, 0)
+	}
+	if chgTariff >= chgCheap {
+		t.Errorf("high-tariff charge (%.0fW) should be less than low-tariff charge (%.0fW)", chgTariff, chgCheap)
+	}
+}
+
+func TestExportBonusMakesArbitrageMoreProfitable(t *testing.T) {
+	// With a big export bonus, arbitrage should discharge MORE at
+	// expensive hours because revenue per kWh is higher.
+	slots := []Slot{
+		{StartMs: 0, LenMin: 60, PriceOre: 50, LoadW: 500, PVW: 0},
+		{StartMs: 3600 * 1000, LenMin: 60, PriceOre: 500, LoadW: 500, PVW: 0},
+	}
+	p := baseParams(ModeArbitrage)
+	p.InitialSoCPct = 80
+	p.TerminalSoCPrice = 0
+
+	p.ExportOrePerKWh = 40
+	lowBonus := Optimize(slots, p)
+
+	p.ExportOrePerKWh = 200
+	highBonus := Optimize(slots, p)
+
+	if highBonus.TotalCostOre >= lowBonus.TotalCostOre {
+		t.Errorf("high export bonus should yield more revenue (lower cost): low=%.1f high=%.1f",
+			lowBonus.TotalCostOre, highBonus.TotalCostOre)
+	}
+}
+
 func TestSelfConsumptionWithZeroBaseline(t *testing.T) {
 	// load==PV → baseline=0. Battery must stay at 0.
 	slots := []Slot{

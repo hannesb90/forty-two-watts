@@ -888,6 +888,19 @@ footer {
   color: var(--text);
 }
 .plan-actions { display: flex; align-items: center; gap: 12px; }
+.tariff-warning {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fbbf24;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  margin: 8px 0;
+}
+.field-warn {
+  border-color: #f59e0b !important;
+  background: rgba(245, 158, 11, 0.08) !important;
+}
 .plan-summary { font-size: 0.85rem; color: var(--text-dim, #94a3b8); }
 #plan-section { margin-top: 18px; }
 #plan-chart { width: 100%; display: block; }

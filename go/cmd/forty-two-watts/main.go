@@ -24,6 +24,7 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/config"
 	"github.com/frahlg/forty-two-watts/go/internal/configreload"
 	"github.com/frahlg/forty-two-watts/go/internal/control"
+	"github.com/frahlg/forty-two-watts/go/internal/currency"
 	"github.com/frahlg/forty-two-watts/go/internal/drivers"
 	"github.com/frahlg/forty-two-watts/go/internal/forecast"
 	"github.com/frahlg/forty-two-watts/go/internal/ha"
@@ -31,6 +32,7 @@ import (
 	modbuscli "github.com/frahlg/forty-two-watts/go/internal/modbus"
 	"github.com/frahlg/forty-two-watts/go/internal/mpc"
 	"github.com/frahlg/forty-two-watts/go/internal/prices"
+	"github.com/frahlg/forty-two-watts/go/internal/pvmodel"
 	"github.com/frahlg/forty-two-watts/go/internal/selftune"
 	"github.com/frahlg/forty-two-watts/go/internal/state"
 	"github.com/frahlg/forty-two-watts/go/internal/telemetry"
@@ -168,7 +170,12 @@ func main() {
 	}
 
 	// ---- Spot prices + weather forecast (optional, nil if not configured) ----
-	priceSvc := prices.FromConfig(cfg.Price, st)
+	// ---- FX rates (ECB, daily) — harmless to run even for SE-only users ----
+	fxSvc := currency.New(st)
+	fxSvc.Start(ctx)
+	defer fxSvc.Stop()
+
+	priceSvc := prices.FromConfig(cfg.Price, st, fxSvc)
 	if priceSvc != nil {
 		priceSvc.Start(ctx)
 		defer priceSvc.Stop()
@@ -194,16 +201,54 @@ func main() {
 			"lat", forecastSvc.Lat, "lon", forecastSvc.Lon, "rated_pv_w", ratedPVW)
 	}
 
+	// ---- Start PV digital twin (optional, requires weather config) ----
+	var pvSvc *pvmodel.Service
+	if cfg.Weather != nil && cfg.Weather.Provider != "" && cfg.Weather.Provider != "none" {
+		lat, lon := cfg.Weather.Latitude, cfg.Weather.Longitude
+		clearSkyFn := func(t time.Time) float64 { return forecast.ClearSkyW(lat, lon, t) }
+		cloudFn := func(t time.Time) (float64, bool) {
+			// Look up nearest forecast row covering `t`.
+			nowMs := t.UnixMilli()
+			rows, err := st.LoadForecasts(nowMs-2*3600*1000, nowMs+2*3600*1000)
+			if err != nil || len(rows) == 0 {
+				return 0, false
+			}
+			for _, r := range rows {
+				slotLen := r.SlotLenMin
+				if slotLen <= 0 {
+					slotLen = 60
+				}
+				end := r.SlotTsMs + int64(slotLen)*60*1000
+				if nowMs >= r.SlotTsMs && nowMs < end && r.CloudCoverPct != nil {
+					return *r.CloudCoverPct, true
+				}
+			}
+			return 0, false
+		}
+		pvSvc = pvmodel.NewService(st, tel, clearSkyFn, cloudFn, ratedPVW)
+		pvSvc.Start(ctx)
+		defer pvSvc.Stop()
+		slog.Info("pvmodel started", "rated_w", ratedPVW, "quality", pvSvc.Model().Quality())
+	}
+
 	// ---- Start MPC planner (optional) ----
 	mpcSvc := buildMPC(cfg, st, tel, capacities)
 	if mpcSvc != nil {
+		if pvSvc != nil {
+			mpcSvc.PV = pvSvc.Predict
+		}
+		if cfg.Price != nil {
+			mpcSvc.ExportBonusOreKwh = cfg.Price.ExportBonusOreKwh
+			mpcSvc.ExportFeeOreKwh = cfg.Price.ExportFeeOreKwh
+		}
 		mpcSvc.Start(ctx)
 		defer mpcSvc.Stop()
 		slog.Info("mpc planner started",
 			"mode", mpcSvc.Defaults.Mode,
 			"capacity_wh", mpcSvc.Defaults.CapacityWh,
 			"horizon", mpcSvc.Horizon,
-			"interval", mpcSvc.Interval)
+			"interval", mpcSvc.Interval,
+			"pvtwin", pvSvc != nil)
 	}
 
 	// ---- Start HTTP API ----
@@ -220,6 +265,7 @@ func main() {
 		Prices:     priceSvc,
 		Forecast:   forecastSvc,
 		MPC:        mpcSvc,
+		PVModel:    pvSvc,
 		Version:    Version,
 	}
 	srv := api.New(deps)

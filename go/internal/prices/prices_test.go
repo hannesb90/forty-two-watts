@@ -172,15 +172,15 @@ func TestServiceFetchesAndStores(t *testing.T) {
 // ---- FromConfig ----
 
 func TestFromConfigNilWhenDisabled(t *testing.T) {
-	if FromConfig(nil, nil) != nil { t.Error("nil cfg → nil service") }
-	if FromConfig(&config.Price{Provider: "none"}, nil) != nil { t.Error("none → nil service") }
-	if FromConfig(&config.Price{Provider: ""}, nil) != nil { t.Error("empty → nil service") }
+	if FromConfig(nil, nil, nil) != nil { t.Error("nil cfg → nil service") }
+	if FromConfig(&config.Price{Provider: "none"}, nil, nil) != nil { t.Error("none → nil service") }
+	if FromConfig(&config.Price{Provider: ""}, nil, nil) != nil { t.Error("empty → nil service") }
 }
 
 func TestFromConfigDefaultsZoneAndVAT(t *testing.T) {
 	st, _ := state.Open(filepath.Join(t.TempDir(), "t.db"))
 	defer st.Close()
-	s := FromConfig(&config.Price{Provider: "elprisetjustnu"}, st)
+	s := FromConfig(&config.Price{Provider: "elprisetjustnu"}, st, nil)
 	if s == nil { t.Fatal("expected service") }
 	if s.Zone != "SE3" { t.Errorf("default zone: %s", s.Zone) }
 	if s.Applier.VATPercent != 25 { t.Errorf("default VAT: %f", s.Applier.VATPercent) }

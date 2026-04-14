@@ -129,14 +129,20 @@ type ENTSOEProvider struct {
 	Client  *http.Client
 	APIKey  string
 	BaseURL string
+
+	// Currency is the ISO code the caller wants prices in (default SEK).
+	// ENTSOE publishes EUR/MWh; we convert via EURToNative if non-nil.
+	Currency     string
+	EURToNative  func(eur float64) float64 // returns amount in native currency
 }
 
 // NewENTSOE returns a provider — caller must set APIKey.
 func NewENTSOE(apiKey string) *ENTSOEProvider {
 	return &ENTSOEProvider{
-		Client:  &http.Client{Timeout: 30 * time.Second},
-		APIKey:  apiKey,
-		BaseURL: "https://web-api.tp.entsoe.eu/api",
+		Client:   &http.Client{Timeout: 30 * time.Second},
+		APIKey:   apiKey,
+		BaseURL:  "https://web-api.tp.entsoe.eu/api",
+		Currency: "SEK",
 	}
 }
 
@@ -235,18 +241,43 @@ type Service struct {
 	done chan struct{}
 }
 
+// FXConverter abstracts currency conversion so the prices package
+// doesn't need to import currency/ directly (and FromConfig callers
+// can pass a test stub). If nil, ENTSOE assumes 1 EUR = 11.5 SEK — a
+// ballpark used only until live rates land.
+type FXConverter interface {
+	Convert(amount float64, from, to string) (float64, bool)
+}
+
 // FromConfig builds a Service from the runtime config. Returns nil + nil if
 // prices are disabled (provider=none or missing section).
-func FromConfig(cfg *config.Price, st *state.Store) *Service {
+func FromConfig(cfg *config.Price, st *state.Store, fx FXConverter) *Service {
 	if cfg == nil || cfg.Provider == "" || cfg.Provider == "none" {
 		return nil
+	}
+	currency := cfg.Currency
+	if currency == "" {
+		currency = "SEK"
 	}
 	var p Provider
 	switch cfg.Provider {
 	case "elprisetjustnu":
 		p = NewElpriser()
 	case "entsoe":
-		p = NewENTSOE(cfg.APIKey)
+		ep := NewENTSOE(cfg.APIKey)
+		ep.Currency = currency
+		if fx != nil {
+			ep.EURToNative = func(eur float64) float64 {
+				v, ok := fx.Convert(eur, "EUR", currency)
+				if !ok {
+					return eur * 11.5 // fallback until rates land
+				}
+				return v
+			}
+		} else {
+			ep.EURToNative = func(eur float64) float64 { return eur * 11.5 }
+		}
+		p = ep
 	default:
 		return nil
 	}

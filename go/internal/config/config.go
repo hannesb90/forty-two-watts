@@ -157,6 +157,19 @@ type Price struct {
 	GridTariffOreKwh float64 `yaml:"grid_tariff_ore_kwh,omitempty"`
 	VATPercent       float64 `yaml:"vat_percent,omitempty"`
 	APIKey           string  `yaml:"api_key,omitempty"`
+
+	// Currency is the ISO code for pricing (default "SEK"). ENTSOE
+	// returns EUR/MWh; we convert using ECB daily FX rates.
+	Currency string `yaml:"currency,omitempty"`
+
+	// ExportBonusOreKwh is a per-kWh bonus on top of spot when exporting.
+	// Some retailers pay spot + fixed bonus (e.g. 60 öre in Sweden via
+	// "skattereduktion" + electricity-certificate value). Default 0.
+	ExportBonusOreKwh float64 `yaml:"export_bonus_ore_kwh,omitempty"`
+
+	// ExportFeeOreKwh is a per-kWh deduction on export (e.g. transmission
+	// fees some DSOs charge for feed-in). Reduces effective export price.
+	ExportFeeOreKwh float64 `yaml:"export_fee_ore_kwh,omitempty"`
 }
 
 // Weather is the weather-forecast source config.
