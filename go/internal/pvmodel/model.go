@@ -94,17 +94,47 @@ func Features(clearSkyW, cloudPct float64, t time.Time) [NFeat]float64 {
 	}
 }
 
-// Predict returns the expected AC output in W (non-negative).
+// Predict returns the expected AC output in W (non-negative). Cold-start
+// behavior: during the first WarmupSamples we blend the learned β with
+// the naive physics prior so a wild β coefficient (which RLS can take a
+// few samples to tame) doesn't produce an unreasonable forecast.
+//
+// After ~warmup samples we trust the learned model fully.
+const WarmupSamples = 50
+
 func (m Model) Predict(clearSkyW, cloudPct float64, t time.Time) float64 {
+	// Learned prediction.
 	x := Features(clearSkyW, cloudPct, t)
-	var y float64
+	var learned float64
 	for i := 0; i < NFeat; i++ {
-		y += m.Beta[i] * x[i]
+		learned += m.Beta[i] * x[i]
 	}
+
+	// Naive physics prior: rated × (clear_sky / 1000) × (1-cloud)^1.5.
+	// Same formula forecast.EstimatePVW uses; kept local to avoid a
+	// package dep and because we evaluate it on every predict call.
+	cf := 1.0
+	if cloudPct > 0 {
+		c := cloudPct / 100.0
+		if c > 1 {
+			c = 1
+		}
+		cf = math.Pow(1-c, 1.5)
+	}
+	prior := m.RatedW * (clearSkyW / 1000.0) * cf
+
+	// Trust = samples / WarmupSamples, clipped to [0, 1].
+	// samples=0  → 100% prior.
+	// samples≥50 → 100% learned.
+	trust := float64(m.Samples) / float64(WarmupSamples)
+	if trust > 1 {
+		trust = 1
+	}
+	y := trust*learned + (1-trust)*prior
+
 	if y < 0 {
 		return 0
 	}
-	// Cap at 1.3× rated — protects against runaway RLS divergence from bad data.
 	if m.RatedW > 0 && y > 1.3*m.RatedW {
 		y = 1.3 * m.RatedW
 	}

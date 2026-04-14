@@ -185,6 +185,12 @@ type Weather struct {
 	// which is only roughly right for homes where PV and storage were
 	// sized together. Set explicitly for accurate day-1 forecasts.
 	PVRatedW float64 `yaml:"pv_rated_w,omitempty"`
+
+	// HeatingWPerDegC adds load proportional to max(18°C − outdoor_temp, 0).
+	// A rough-but-useful way to teach the planner that cold nights cost
+	// more than mild ones without running a full ML temperature fit.
+	// Typical Swedish single-family values: 200–500 W/°C. 0 disables.
+	HeatingWPerDegC float64 `yaml:"heating_w_per_degc,omitempty"`
 }
 
 // Battery is per-battery overrides (keyed by driver name in the top-level map).

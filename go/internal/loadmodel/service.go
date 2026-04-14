@@ -11,6 +11,11 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/telemetry"
 )
 
+// TempFunc returns outdoor temperature (°C) for a given time, (value, ok).
+// Same shape as pvmodel.CloudFunc — injected by main.go to decouple this
+// package from the forecast module.
+type TempFunc func(t time.Time) (float64, bool)
+
 const stateKey = "loadmodel/state"
 
 // Service trains the load model online from telemetry. Mirrors
@@ -18,7 +23,8 @@ const stateKey = "loadmodel/state"
 type Service struct {
 	Store          *state.Store
 	Tele           *telemetry.Store
-	SiteMeter      string // driver name that carries the site's grid meter
+	SiteMeter      string   // driver name that carries the site's grid meter
+	Temp           TempFunc // optional outdoor-temp source (forecast)
 	SampleInterval time.Duration
 	PersistEvery   int64
 
@@ -43,7 +49,7 @@ func NewService(st *state.Store, tel *telemetry.Store, siteMeter string, peakW f
 	if st != nil {
 		if js, ok := st.LoadConfig(stateKey); ok && js != "" {
 			var m Model
-			if err := json.Unmarshal([]byte(js), &m); err == nil && m.Forgetting > 0 {
+			if err := json.Unmarshal([]byte(js), &m); err == nil && m.Alpha > 0 {
 				m.PeakW = peakW // config may have changed
 				s.model = &m
 				slog.Info("loadmodel restored", "samples", m.Samples, "mae_w", m.MAE, "quality", m.Quality())
@@ -64,13 +70,21 @@ func (s *Service) Model() Model {
 }
 
 // Predict is the MPC's integration point — expected load at time t.
+// If a temperature source is wired, the heating-gain correction is
+// included; otherwise we predict assuming indoor setpoint (no heating).
 func (s *Service) Predict(t time.Time) float64 {
 	if s == nil {
 		return 0
 	}
+	temp := HeatingReferenceC
+	if s.Temp != nil {
+		if v, ok := s.Temp(t); ok {
+			temp = v
+		}
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.model.Predict(t)
+	return s.model.Predict(t, temp)
 }
 
 // Start kicks off the online-learning goroutine.
@@ -136,13 +150,22 @@ func (s *Service) sample() {
 		return
 	}
 
+	// Outdoor temp for heating-fit. HeatingReferenceC = "no contribution".
+	temp := HeatingReferenceC
+	if s.Temp != nil {
+		if v, ok := s.Temp(now); ok {
+			temp = v
+		}
+	}
+
 	s.mu.Lock()
-	updated := s.model.Update(now, loadW)
+	updated := s.model.Update(now, loadW, temp)
 	samples := s.model.Samples
 	mae := s.model.MAE
+	heating := s.model.HeatingW_per_degC
 	s.mu.Unlock()
 
-	slog.Info("loadmodel: sample", "load_w", loadW, "samples", samples, "mae_w", mae, "updated", updated)
+	slog.Info("loadmodel: sample", "load_w", loadW, "temp_c", temp, "samples", samples, "mae_w", mae, "heat_w_per_c", heating, "updated", updated)
 
 	if updated && samples%s.PersistEvery == 0 {
 		s.persist()
@@ -162,6 +185,17 @@ func (s *Service) persist() {
 	if err := s.Store.SaveConfig(stateKey, string(js)); err != nil {
 		slog.Warn("loadmodel persist", "err", err)
 	}
+}
+
+// SetHeatingCoef lets the operator declare heating-load sensitivity
+// from config. Units: W per °C below 18°C. 0 disables.
+func (s *Service) SetHeatingCoef(w float64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.model.HeatingW_per_degC = w
+	s.mu.Unlock()
 }
 
 // Reset clears the model (e.g. after a big appliance change).

@@ -246,6 +246,33 @@ func main() {
 		loadPeakW = 5000
 	}
 	loadSvc := loadmodel.NewService(st, tel, cfg.SiteMeterDriver(), loadPeakW)
+	if cfg.Weather != nil && cfg.Weather.HeatingWPerDegC > 0 {
+		m := loadSvc.Model()
+		m.HeatingW_per_degC = cfg.Weather.HeatingWPerDegC
+		// Apply without persisting raw overwrite — model is behind a sync,
+		// so use the exposed setter. Simpler: push via reset+restore.
+		// Just update the live field directly through a small helper.
+		loadSvc.SetHeatingCoef(cfg.Weather.HeatingWPerDegC)
+	}
+	// Temperature source for heating-gain fit: same forecast cache.
+	loadSvc.Temp = func(t time.Time) (float64, bool) {
+		nowMs := t.UnixMilli()
+		rows, err := st.LoadForecasts(nowMs-2*3600*1000, nowMs+2*3600*1000)
+		if err != nil || len(rows) == 0 {
+			return 0, false
+		}
+		for _, r := range rows {
+			slotLen := r.SlotLenMin
+			if slotLen <= 0 {
+				slotLen = 60
+			}
+			end := r.SlotTsMs + int64(slotLen)*60*1000
+			if nowMs >= r.SlotTsMs && nowMs < end && r.TempC != nil {
+				return *r.TempC, true
+			}
+		}
+		return 0, false
+	}
 	loadSvc.Start(ctx)
 	defer loadSvc.Stop()
 	slog.Info("loadmodel started", "peak_w", loadPeakW, "quality", loadSvc.Model().Quality())

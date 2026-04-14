@@ -312,9 +312,11 @@
       series = [
         { data: chartHistory.grid,            color: "#ef4444", width: 2,   dash: [],     name: "Grid",         fill: true },
         { data: chartHistory.pv,              color: "#22c55e", width: 2,   dash: [],     name: "PV",           fill: true },
-        { data: chartHistory.pv_forecast,     color: "#22c55e", width: 1.5, dash: [5, 4], name: "PV twin",      fill: false },
+        // PV twin: lighter green + distinct dash + thicker so you can see
+        // the gap between predicted and actual even when they're close.
+        { data: chartHistory.pv_forecast,     color: "#86efac", width: 2,   dash: [4, 6], name: "PV twin",      fill: false },
         { data: chartHistory.load,            color: "#e2e8f0", width: 1.5, dash: [],     name: "Load",         fill: false },
-        { data: chartHistory.load_forecast,   color: "#e2e8f0", width: 1.5, dash: [5, 4], name: "Load twin",    fill: false },
+        { data: chartHistory.load_forecast,   color: "#fde68a", width: 2,   dash: [4, 6], name: "Load twin",    fill: false },
         { data: chartHistory.ferroamp_bat,    color: "#f59e0b", width: 2,   dash: [],     name: "Ferroamp",     fill: false },
         { data: chartHistory.ferroamp_target, color: "#f59e0b", width: 1.5, dash: [6, 4], name: "Ferroamp tgt", fill: false },
         { data: chartHistory.sungrow_bat,     color: "#8b5cf6", width: 2,   dash: [],     name: "Sungrow",      fill: false },
@@ -430,8 +432,10 @@
       ctx.strokeStyle = sr.color;
       ctx.lineWidth = sr.width;
       ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      ctx.setLineDash(sr.dash);
+      // butt caps on dashed lines so each dash renders crisp; round caps
+      // fill the gap between dashes and look like a solid line.
+      ctx.lineCap = (sr.dash && sr.dash.length) ? "butt" : "round";
+      ctx.setLineDash(sr.dash || []);
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y);
       for (var p2 = 1; p2 < pts.length; p2++) ctx.lineTo(pts[p2].x, pts[p2].y);

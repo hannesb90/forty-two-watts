@@ -8,9 +8,7 @@ import (
 )
 
 // synthetic household: 300W baseline, morning peak 2500W around 07:30,
-// evening peak 3500W around 19:00, broader midday usage during WFH.
-// Cosine lobes keep it smooth — real homes are bumpier but this is
-// realistic enough to validate the learning pipeline.
+// evening peak 3500W around 19:00.
 func synthetic(t time.Time) float64 {
 	h := float64(t.Hour()) + float64(t.Minute())/60.0
 	base := 300.0
@@ -20,120 +18,120 @@ func synthetic(t time.Time) float64 {
 	return base + morning + midday + evening
 }
 
-// naivePredict uses a flat constant — what BaseLoad in config does today.
-func naivePredict(avg float64) float64 { return avg }
+func TestDayOnePriorIsUsefulEverywhere(t *testing.T) {
+	// Before any training: predictions at any hour should be within
+	// reasonable bounds (>0 overnight, elevated at peaks). The typical
+	// prior is the safety net that covers cold start.
+	m := NewModel(4000)
+	overnight := time.Date(2026, 3, 17, 3, 0, 0, 0, time.UTC)
+	morning := time.Date(2026, 3, 17, 7, 30, 0, 0, time.UTC)
+	evening := time.Date(2026, 3, 17, 19, 0, 0, 0, time.UTC)
+	o := m.PredictNoTemp(overnight)
+	mo := m.PredictNoTemp(morning)
+	e := m.PredictNoTemp(evening)
+	if o < 100 || o > 800 {
+		t.Errorf("overnight should be in [100, 800], got %f", o)
+	}
+	if mo < 1500 {
+		t.Errorf("morning peak should be >= 1500, got %f", mo)
+	}
+	if e < 2000 {
+		t.Errorf("evening peak should be >= 2000, got %f", e)
+	}
+}
 
 func TestLearnsHouseholdPattern(t *testing.T) {
 	m := NewModel(4000)
 	rng := rand.New(rand.NewSource(42))
-	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	// 30 days × 24h × 4 samples/hour = 2880 samples
-	for d := 0; d < 30; d++ {
-		for h := 0; h < 24; h++ {
-			for q := 0; q < 4; q++ {
-				t0 := start.Add(time.Duration(d*24+h)*time.Hour + time.Duration(q*15)*time.Minute)
-				actual := synthetic(t0)
-				// 3% measurement noise
-				actual += (rng.Float64()*2 - 1) * 0.03 * actual
-				m.Update(t0, actual)
-			}
-		}
-	}
-	// Compare twin vs flat baseline across 24 hours.
-	// naive baseline = training-set mean (best flat constant).
-	var trainSum float64
-	var n int
-	for d := 0; d < 30; d++ {
+	start := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC) // Monday
+	// 10 weeks × 7 days × 24 hours = 1680 hourly samples, ~10 per bucket —
+	// past MinTrustSamples, bucket EMA dominates the prior.
+	for d := 0; d < 70; d++ {
 		for h := 0; h < 24; h++ {
 			t0 := start.Add(time.Duration(d*24+h) * time.Hour)
-			trainSum += synthetic(t0)
-			n++
+			actual := synthetic(t0) + (rng.Float64()*2-1)*50 // tiny noise
+			m.Update(t0, actual, HeatingReferenceC)          // no heating
 		}
 	}
-	mean := trainSum / float64(n)
-
-	var twinErr, naiveErr float64
-	samples := 0
-	for h := 0; h < 24; h++ {
-		testT := time.Date(2026, 2, 1, h, 0, 0, 0, time.UTC)
-		want := synthetic(testT)
-		twinErr += math.Abs(m.Predict(testT) - want)
-		naiveErr += math.Abs(naivePredict(mean) - want)
-		samples++
+	// Check weekday prediction accuracy.
+	test := time.Date(2026, 3, 2, 19, 0, 0, 0, time.UTC) // Monday 19:00
+	want := synthetic(test)
+	got := m.Predict(test, HeatingReferenceC)
+	if math.Abs(got-want)/want > 0.10 {
+		t.Errorf("evening prediction off: got %.0f want %.0f", got, want)
 	}
-	twinErr /= float64(samples)
-	naiveErr /= float64(samples)
-	t.Logf("twin MAE %.0fW, naive (mean) MAE %.0fW, improvement %.1f%%",
-		twinErr, naiveErr, (1-twinErr/naiveErr)*100)
-	// Twin should beat flat baseline by a meaningful margin — with 3
-	// harmonics capturing sharp 07:30 / 19:00 peaks we expect ≥30%.
-	if twinErr >= naiveErr*0.7 {
-		t.Errorf("twin should beat flat baseline by >30%%: twin=%.0fW naive=%.0fW", twinErr, naiveErr)
-	}
-	if m.Quality() < 0.3 {
-		t.Errorf("quality should be >0.3 after 2880 samples, got %.2f (MAE=%.0fW)", m.Quality(), m.MAE)
+	if m.Quality() < 0.5 {
+		t.Errorf("quality should be ≥0.5 after 4 weeks, got %.3f", m.Quality())
 	}
 }
 
-func TestPredictsEveningPeak(t *testing.T) {
-	// Specific test: model must identify the 19:00 peak.
+func TestHeatingConfiguredBoostsColdDayPrediction(t *testing.T) {
+	// When operator sets HeatingW_per_degC, Predict adds heating on cold
+	// days. Warm days (≥ reference) are unaffected.
 	m := NewModel(4000)
-	rng := rand.New(rand.NewSource(1))
-	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	for d := 0; d < 20; d++ {
-		for h := 0; h < 24; h++ {
-			t0 := start.Add(time.Duration(d*24+h) * time.Hour)
-			actual := synthetic(t0) + (rng.Float64()*2-1)*50
-			m.Update(t0, actual)
-		}
+	m.HeatingW_per_degC = 300
+	t0 := time.Date(2026, 3, 17, 12, 0, 0, 0, time.UTC)
+	warm := m.Predict(t0, 20) // above reference
+	freezing := m.Predict(t0, -5)
+	delta := freezing - warm
+	// Expected heating contribution: 300 W/°C × (18 − (−5)) = 6900 W.
+	if math.Abs(delta-6900) > 100 {
+		t.Errorf("heating contribution: got %.0f W, want ~6900 W", delta)
 	}
-	evening := time.Date(2026, 2, 1, 19, 0, 0, 0, time.UTC)
-	noon := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
-	overnight := time.Date(2026, 2, 1, 3, 0, 0, 0, time.UTC)
-	pe := m.Predict(evening)
-	pn := m.Predict(noon)
-	po := m.Predict(overnight)
-	if !(pe > pn && pn > po) {
-		t.Errorf("expected evening > noon > overnight, got e=%.0f n=%.0f o=%.0f", pe, pn, po)
+}
+
+func TestHourOfWeekDeterministic(t *testing.T) {
+	// Monday 00:00 UTC → 0
+	mon := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)
+	if idx := HourOfWeek(mon); idx != 0 {
+		t.Errorf("Monday 00:00 should be bucket 0, got %d", idx)
 	}
-	if pe < 2500 {
-		t.Errorf("evening peak should be ≥2500W, got %.0f", pe)
-	}
-	if po > 800 {
-		t.Errorf("overnight should be <800W, got %.0f", po)
+	// Sunday 23:00 UTC → 167
+	sun := time.Date(2026, 1, 11, 23, 0, 0, 0, time.UTC)
+	if idx := HourOfWeek(sun); idx != 167 {
+		t.Errorf("Sunday 23:00 should be bucket 167, got %d", idx)
 	}
 }
 
 func TestRejectsNegativeLoad(t *testing.T) {
 	m := NewModel(4000)
 	before := m.Samples
-	m.Update(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), -500)
+	m.Update(time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC), -500, HeatingReferenceC)
 	if m.Samples != before {
-		t.Errorf("negative load should be skipped")
+		t.Errorf("negative load should be rejected")
 	}
 }
 
 func TestRejectsOutliers(t *testing.T) {
 	m := NewModel(4000)
-	start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	start := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < 200; i++ {
-		m.Update(start.Add(time.Duration(i)*time.Minute), 1500)
+		m.Update(start.Add(time.Duration(i)*time.Minute), 1500, HeatingReferenceC)
 	}
-	preBeta := m.Beta
-	m.Update(start.Add(500*time.Minute), 50000) // 33× the typical
-	var drift float64
-	for i := 0; i < NFeat; i++ {
-		drift += math.Abs(m.Beta[i] - preBeta[i])
-	}
-	if drift > 1 {
-		t.Errorf("outlier should be rejected, β drift %.4f", drift)
+	preMean := m.Bucket[HourOfWeek(start)].Mean
+	m.Update(start.Add(500*time.Minute), 50000, HeatingReferenceC) // 33× typical
+	postMean := m.Bucket[HourOfWeek(start.Add(500*time.Minute))].Mean
+	if math.Abs(postMean-preMean) > 500 {
+		t.Errorf("outlier should be rejected, mean drift %.0f", postMean-preMean)
 	}
 }
 
-func TestInitialPredictionNonZero(t *testing.T) {
+func TestPredictRespectsTrust(t *testing.T) {
+	// A bucket with 0 samples returns pure prior.
+	// After many samples, it returns the bucket's EMA.
 	m := NewModel(4000)
-	got := m.Predict(time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC))
-	if got != 500 {
-		t.Errorf("initial prediction should be 500W baseline, got %.0f", got)
+	t0 := time.Date(2026, 1, 5, 19, 0, 0, 0, time.UTC)
+	prior := typicalPrior(HourOfWeek(t0))
+	predBefore := m.Predict(t0, HeatingReferenceC)
+	if math.Abs(predBefore-prior) > 1 {
+		t.Errorf("fresh bucket should return prior (%f), got %f", prior, predBefore)
+	}
+	// Feed 30 samples of a constant 1000W at this hour.
+	for i := 0; i < 30; i++ {
+		m.Update(t0.AddDate(0, 0, 7*i), 1000, HeatingReferenceC)
+	}
+	predAfter := m.Predict(t0, HeatingReferenceC)
+	if math.Abs(predAfter-1000) > 100 {
+		t.Errorf("trained bucket should be ~1000W, got %f", predAfter)
 	}
 }

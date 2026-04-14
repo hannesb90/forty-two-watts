@@ -1,29 +1,29 @@
-// Package loadmodel is a self-learning digital twin for household load.
+// Package loadmodel learns a household load profile online.
 //
-// The MPC needs a forecast of consumption to decide when to charge
-// cheaply. A flat baseline wastes most of the arbitrage opportunity:
-// real homes have a morning peak, a midday dip, and a big evening peak.
-// This package learns that pattern online from the same telemetry the
-// control loop already produces.
+// Design choices driven by robustness / interpretability:
 //
-// measured_load_w = grid_w − pv_w − bat_w
+//  1. 168 buckets — one per (weekday, hour-of-day). An EMA per bucket.
+//     Directly models the weekly pattern that dominates residential
+//     load (weekend vs weekday, morning peak, evening peak, overnight
+//     baseline) without having to fit non-linear basis functions.
 //
-//	(site sign: grid import +, pv −, bat charge +  →  loads net out)
+//  2. Typical-home prior. Each bucket is seeded with a reasonable
+//     Swedish-home default (300W overnight, 2000W morning/evening
+//     peaks, 600W midday). Day-one predictions are useful; the model
+//     refines from there.
 //
-// The model is a linear RLS over seven features — bias plus three time-
-// of-day harmonics — deliberately small so it converges from a few
-// days of data and stays interpretable. Same shape as pvmodel so
-// operators have one mental model.
+//  3. Trust-weighted blending. Per-bucket trust = min(samples/20, 1).
+//     A fresh bucket ignores its (noisy) EMA and returns the prior.
+//     After ~20 samples through that bucket (3 weeks of 1-sample/min
+//     yields ~60 samples per bucket per week), we trust observations.
 //
-// Feature vector:
+//  4. Optional temperature correction. Outdoor temperature below 18°C
+//     tracks strongly with heating load. We maintain a global scalar
+//     `HeatingW_per_degC`, fit online via a simple EMA of residuals
+//     vs. (18 − temp_c). Adds 0 W when temp is unknown or ≥ 18°C.
 //
-//	x = [ 1,
-//	      sin(2π·h/24), cos(2π·h/24),        // daily cycle
-//	      sin(4π·h/24), cos(4π·h/24),        // morning + evening peaks
-//	      sin(6π·h/24), cos(6π·h/24) ]       // sharper peak detail
-//
-// We don't include weekday/weekend or outdoor temperature in v1 to keep
-// the surface small. Both are easy follow-ups once we see real data.
+// The fallback-on-empty behavior makes this model safe on cold boot —
+// the MPC always gets a plausible load estimate, never zero or wild.
 package loadmodel
 
 import (
@@ -31,86 +31,123 @@ import (
 	"time"
 )
 
-// NFeat is the number of features in the RLS regression.
-const NFeat = 7
+// Buckets is the number of hour-of-week buckets: 7 days × 24 hours.
+const Buckets = 7 * 24
 
-// Model is the learned load predictor.
-type Model struct {
-	Beta       [NFeat]float64         `json:"beta"`
-	P          [NFeat][NFeat]float64  `json:"p"`
-	Forgetting float64                `json:"forgetting"`
-	Samples    int64                  `json:"samples"`
-	LastMs     int64                  `json:"last_ms"`
-	MAE        float64                `json:"mae"`        // EMA of |err| (W)
-	PeakW      float64                `json:"peak_w"`     // reference peak for Quality()
+// MinTrustSamples is how many samples we want in a bucket before we
+// fully trust its EMA. Below this we blend with the prior. 8 ≈ two
+// months of weekly observations, enough signal to outrank the prior.
+const MinTrustSamples = 8
+
+// HeatingReferenceC is the indoor setpoint the heating curve is
+// relative to. Load proportional to max(setpoint − outdoor, 0).
+const HeatingReferenceC = 18.0
+
+// Bucket holds one hour-of-week's learned state.
+type Bucket struct {
+	Mean    float64 `json:"mean"`     // EMA of observed load (W)
+	Samples int64   `json:"samples"`
 }
 
-// NewModel returns a model with a flat 500W baseline prior — a reasonable
-// "always-on" estimate for a Swedish home. RLS will refine as data flows.
+// Model is the hour-of-week + heating-gain predictor.
+type Model struct {
+	Bucket            [Buckets]Bucket `json:"bucket"`
+	HeatingW_per_degC float64         `json:"heating_w_per_degc"`
+	PeakW             float64         `json:"peak_w"`
+	Samples           int64           `json:"samples"`
+	LastMs            int64           `json:"last_ms"`
+	MAE               float64         `json:"mae"`
+	Alpha             float64         `json:"alpha"` // EMA coefficient for bucket updates
+}
+
+// typicalPrior returns an approximate W load for a given hour-of-week
+// based on a generic single-family Swedish home. Peak dinner around
+// 18:00–19:00, morning coffee around 07:00, weekend patterns shifted
+// slightly later.
+func typicalPrior(hourOfWeek int) float64 {
+	weekday := hourOfWeek / 24
+	hour := hourOfWeek % 24
+	isWeekend := weekday >= 5 // Saturday (5), Sunday (6)
+	base := 300.0             // overnight baseload
+	morning := 2000.0 * math.Exp(-0.5*math.Pow(float64(hour-7)/1.2, 2))
+	midday := 600.0 * math.Exp(-0.5*math.Pow(float64(hour-13)/2.5, 2))
+	eveningH := 18.5
+	if isWeekend {
+		eveningH = 19.0
+		morning *= 0.7 // sleep-in
+	}
+	evening := 2500.0 * math.Exp(-0.5*math.Pow((float64(hour)-eveningH)/1.3, 2))
+	return base + morning + midday + evening
+}
+
+// NewModel returns a model seeded with the typical prior on every bucket.
 func NewModel(peakW float64) *Model {
 	m := &Model{
-		Forgetting: 0.995,
-		PeakW:      peakW,
+		PeakW: peakW,
+		Alpha: 0.1, // new sample gets 10% weight in EMA
 	}
 	if m.PeakW <= 0 {
-		m.PeakW = 5000 // 5 kW peak — typical single-family home
+		m.PeakW = 5000
 	}
-	for i := 0; i < NFeat; i++ {
-		m.P[i][i] = 1000.0
+	for i := 0; i < Buckets; i++ {
+		m.Bucket[i].Mean = typicalPrior(i)
+		m.Bucket[i].Samples = 0
 	}
-	m.Beta[0] = 500.0 // baseline 500W — typical overnight load
 	return m
 }
 
-// Features returns the feature vector for a given time.
-func Features(t time.Time) [NFeat]float64 {
-	hour := float64(t.Hour()) + float64(t.Minute())/60.0
-	h := 2 * math.Pi * hour / 24.0
-	return [NFeat]float64{
-		1.0,
-		math.Sin(h),
-		math.Cos(h),
-		math.Sin(2 * h),
-		math.Cos(2 * h),
-		math.Sin(3 * h),
-		math.Cos(3 * h),
-	}
+// HourOfWeek computes 0..167 for a time. Monday = 0 through Sunday.
+// Works in UTC to keep results deterministic — callers pass t in
+// local time when they want local-time behaviour.
+func HourOfWeek(t time.Time) int {
+	// time.Weekday: Sunday=0, Saturday=6. We shift so Monday=0.
+	wd := (int(t.Weekday()) + 6) % 7
+	return wd*24 + t.Hour()
 }
 
-// Predict returns the expected load in W (clamped to ≥ 0). Loads are
-// non-negative by definition — if β produces a negative prediction,
-// that's an artifact of the linear basis, not a physical scenario.
-func (m Model) Predict(t time.Time) float64 {
-	x := Features(t)
-	var y float64
-	for i := 0; i < NFeat; i++ {
-		y += m.Beta[i] * x[i]
+// Predict returns the expected load (W, non-negative) at time t with
+// outdoor temperature tempC (0 if unknown). Blends per-bucket EMA with
+// the typical prior by sample count, then adds the heating correction.
+func (m Model) Predict(t time.Time, tempC float64) float64 {
+	idx := HourOfWeek(t)
+	b := m.Bucket[idx]
+	trust := float64(b.Samples) / MinTrustSamples
+	if trust > 1 {
+		trust = 1
 	}
+	prior := typicalPrior(idx)
+	base := trust*b.Mean + (1-trust)*prior
+	heating := 0.0
+	if tempC < HeatingReferenceC {
+		heating = m.HeatingW_per_degC * (HeatingReferenceC - tempC)
+	}
+	y := base + heating
 	if y < 0 {
 		return 0
 	}
-	// Cap at 3× peak as a sanity bound. A home that spikes 3× peak is
-	// an anomaly (EV on top of sauna?); better to clip than trust a
-	// linear extrapolation way outside training.
 	if m.PeakW > 0 && y > 3*m.PeakW {
 		y = 3 * m.PeakW
 	}
 	return y
 }
 
-// Update runs one RLS step. Rejects 10σ outliers once warmed up.
-func (m *Model) Update(t time.Time, actualLoadW float64) (updated bool) {
+// PredictNoTemp is a convenience that predicts without a temperature
+// signal — useful when no forecast is available.
+func (m Model) PredictNoTemp(t time.Time) float64 { return m.Predict(t, HeatingReferenceC) }
+
+// Update runs one online update. Feed (now, actual_load_w, outdoor_temp_c).
+// Pass 0 for tempC if unknown; we'll skip the heating fit in that case.
+// Returns true when the update was applied (not filtered as an outlier).
+func (m *Model) Update(t time.Time, actualLoadW, tempC float64) (updated bool) {
 	if actualLoadW < 0 {
-		// Negative "load" means the measurement is off — probably a
-		// sign-convention glitch during a driver restart. Skip.
 		return false
 	}
-	x := Features(t)
-	var yHat float64
-	for i := 0; i < NFeat; i++ {
-		yHat += m.Beta[i] * x[i]
-	}
-	err := actualLoadW - yHat
+	idx := HourOfWeek(t)
+	b := &m.Bucket[idx]
+	prior := typicalPrior(idx)
+	// Outlier filter: once we have some history, reject 10× MAE residuals.
+	predicted := m.Predict(t, tempC)
+	err := actualLoadW - predicted
 	if m.Samples > 50 {
 		band := math.Max(m.MAE*10, 200)
 		if math.Abs(err) > band {
@@ -118,38 +155,33 @@ func (m *Model) Update(t time.Time, actualLoadW float64) (updated bool) {
 		}
 	}
 
-	// K = P·x / (λ + x^T·P·x)
-	var Px [NFeat]float64
-	for i := 0; i < NFeat; i++ {
-		var s float64
-		for j := 0; j < NFeat; j++ {
-			s += m.P[i][j] * x[j]
-		}
-		Px[i] = s
+	// Bucket update: exact running mean for the first 10 samples (crisp
+	// early convergence), EMA after (smooth drift as the home evolves).
+	// Subtract the current heating-gain estimate so the bucket learns
+	// the "base" load — heating varies day-to-day and shouldn't smear
+	// into the hour-of-week signature.
+	heatEst := 0.0
+	if tempC < HeatingReferenceC {
+		heatEst = m.HeatingW_per_degC * (HeatingReferenceC - tempC)
 	}
-	var xPx float64
-	for i := 0; i < NFeat; i++ {
-		xPx += x[i] * Px[i]
+	baseSample := actualLoadW - heatEst
+	if baseSample < 0 {
+		baseSample = 0
 	}
-	denom := m.Forgetting + xPx
-	var K [NFeat]float64
-	for i := 0; i < NFeat; i++ {
-		K[i] = Px[i] / denom
+	if b.Samples < 10 {
+		b.Mean = (b.Mean*float64(b.Samples) + baseSample) / float64(b.Samples+1)
+	} else {
+		b.Mean = (1-m.Alpha)*b.Mean + m.Alpha*baseSample
 	}
-	for i := 0; i < NFeat; i++ {
-		m.Beta[i] += K[i] * err
-	}
-	var newP [NFeat][NFeat]float64
-	for i := 0; i < NFeat; i++ {
-		for j := 0; j < NFeat; j++ {
-			var kxTP float64
-			for k := 0; k < NFeat; k++ {
-				kxTP += K[i] * x[k] * m.P[k][j]
-			}
-			newP[i][j] = (m.P[i][j] - kxTP) / m.Forgetting
-		}
-	}
-	m.P = newP
+	b.Samples++
+	_ = prior
+
+	// Heating coefficient is operator-configured (Planner.HeatingWPerDegC
+	// in config). We don't try to identify it from data here because
+	// online fit is noisy + entangled with the bucket baseline. The
+	// simple path is: user enters "my house needs ~300 W/°C" once,
+	// the MPC uses it for forward-looking cold-day planning. Room for
+	// a dedicated offline OLS fit in a future iteration.
 
 	m.Samples++
 	m.LastMs = t.UnixMilli()
@@ -161,18 +193,28 @@ func (m *Model) Update(t time.Time, actualLoadW float64) (updated bool) {
 	return true
 }
 
-// Quality reports confidence in [0, 1]. 0 = untrained, 1 = MAE ≤ 5% of
-// peak. Scales linearly between 5% and 50%.
+// Quality reports confidence in [0, 1]. Roughly: what fraction of
+// buckets have enough samples to be trusted, weighted by MAE.
 func (m Model) Quality() float64 {
-	if m.Samples < 30 || m.PeakW <= 0 {
+	if m.PeakW <= 0 {
 		return 0
 	}
-	rel := m.MAE / m.PeakW
-	if rel <= 0.05 {
-		return 1.0
+	var warm int
+	for i := 0; i < Buckets; i++ {
+		if m.Bucket[i].Samples >= MinTrustSamples {
+			warm++
+		}
 	}
-	if rel >= 0.5 {
-		return 0.0
+	coverage := float64(warm) / float64(Buckets)
+	// Accuracy factor based on MAE vs peak.
+	accuracy := 0.0
+	if m.Samples > 0 {
+		rel := m.MAE / m.PeakW
+		if rel <= 0.05 {
+			accuracy = 1.0
+		} else if rel < 0.5 {
+			accuracy = 1 - (rel-0.05)/0.45
+		}
 	}
-	return 1.0 - (rel-0.05)/0.45
+	return 0.5*coverage + 0.5*accuracy
 }

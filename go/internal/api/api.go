@@ -707,15 +707,23 @@ func (s *Server) handleLoadModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m := s.deps.LoadModel.Model()
+	// Count warmed-up buckets (≥ MinTrustSamples).
+	warm := 0
+	for i := 0; i < loadmodel.Buckets; i++ {
+		if m.Bucket[i].Samples >= loadmodel.MinTrustSamples {
+			warm++
+		}
+	}
 	writeJSON(w, 200, map[string]any{
-		"enabled":    true,
-		"samples":    m.Samples,
-		"mae_w":      m.MAE,
-		"peak_w":     m.PeakW,
-		"quality":    m.Quality(),
-		"last_ms":    m.LastMs,
-		"forgetting": m.Forgetting,
-		"beta":       m.Beta,
+		"enabled":             true,
+		"samples":             m.Samples,
+		"mae_w":               m.MAE,
+		"peak_w":              m.PeakW,
+		"quality":             m.Quality(),
+		"last_ms":             m.LastMs,
+		"heating_w_per_degc":  m.HeatingW_per_degC,
+		"buckets_warm":        warm,
+		"buckets_total":       loadmodel.Buckets,
 	})
 }
 
