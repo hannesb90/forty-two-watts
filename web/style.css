@@ -1011,6 +1011,50 @@ footer {
   color: #86efac;
   font-style: italic;
 }
+
+/* Progressive disclosure: body.simple hides .advanced-only elements.
+   body.advanced reveals them. Default is simple. */
+body.simple .advanced-only { display: none !important; }
+#ui-mode-toggle { margin-right: 8px; }
+body.advanced #ui-mode-toggle { color: #fbbf24; }
+
+.twins-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.twin-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 12px;
+}
+.twin-card h3 {
+  font-size: 0.9rem;
+  margin: 0 0 8px 0;
+  color: var(--text, #e2e8f0);
+}
+.twin-card .twin-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  padding: 2px 0;
+}
+.twin-card .twin-row span { color: var(--text-dim, #94a3b8); }
+.twin-card .twin-row b { color: var(--text, #e2e8f0); font-weight: 500; }
+.twin-quality {
+  height: 4px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+.twin-quality-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #22c55e, #86efac);
+  transition: width 0.3s;
+}
 .models-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
