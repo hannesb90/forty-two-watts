@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <rect width="64" height="64" rx="12" fill="#0f172a"/>
+  <!-- dolphin silhouette, friendly hitchhiker vibe -->
+  <path d="M10 38 C 14 24, 26 14, 42 14 C 50 14, 55 18, 55 18
+           C 54 22, 50 26, 46 28
+           C 48 32, 49 38, 44 44
+           C 38 50, 28 52, 18 48
+           C 14 46, 10 42, 10 38 Z"
+        fill="#60a5fa"/>
+  <!-- eye -->
+  <circle cx="42" cy="22" r="1.6" fill="#0f172a"/>
+  <!-- belly highlight -->
+  <path d="M18 40 C 24 46, 34 46, 42 41 C 36 44, 28 44, 18 40 Z" fill="#93c5fd" opacity="0.6"/>
+  <!-- water line -->
+  <path d="M6 54 Q 16 51, 26 54 T 46 54 T 58 54" stroke="#334155" stroke-width="1.5" fill="none" opacity="0.6"/>
+</svg>

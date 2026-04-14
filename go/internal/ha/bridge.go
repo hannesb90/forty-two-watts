@@ -48,6 +48,49 @@ type Bridge struct {
 	topicPrefix string // e.g. "forty-two-watts"
 	discoPrefix string // e.g. "homeassistant"
 	deviceID    string
+
+	mu               sync.Mutex
+	lastPublishMs    int64
+	sensorsAnnounced int
+}
+
+// IsConnected returns true if the Paho MQTT client currently has an
+// active connection to the broker.
+func (b *Bridge) IsConnected() bool {
+	if b == nil || b.client == nil {
+		return false
+	}
+	return b.client.IsConnected()
+}
+
+// BrokerAddr returns the configured "host:port" string for diagnostics.
+func (b *Bridge) BrokerAddr() string {
+	if b == nil || b.cfg == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", b.cfg.Broker, b.cfg.Port)
+}
+
+// LastPublishMs is the Unix milliseconds when the last state publish
+// went out. 0 if nothing has been published yet.
+func (b *Bridge) LastPublishMs() int64 {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastPublishMs
+}
+
+// SensorsAnnounced is the count of HA-discovery sensors we registered
+// on connect. Non-zero means the auto-discovery worked.
+func (b *Bridge) SensorsAnnounced() int {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.sensorsAnnounced
 }
 
 // Start connects to the HA broker, publishes autodiscovery, and begins
@@ -194,6 +237,10 @@ func (b *Bridge) publishDiscovery() {
 			b.publish(topic, data, true)
 		}
 	}
+	// Count total sensors announced (site + per-driver).
+	b.mu.Lock()
+	b.sensorsAnnounced = len(sensors) + len(b.driverNames)*5 // 5 per driver
+	b.mu.Unlock()
 }
 
 // ---- Command subscriber ----
@@ -250,6 +297,10 @@ func (b *Bridge) publishLoop() {
 }
 
 func (b *Bridge) publishState() {
+	// Record the publish tick so /api/ha/status can show liveness.
+	b.mu.Lock()
+	b.lastPublishMs = time.Now().UnixMilli()
+	b.mu.Unlock()
 	// Site-level aggregates
 	b.ctrlMu.Lock()
 	siteMeter := b.ctrl.SiteMeterDriver

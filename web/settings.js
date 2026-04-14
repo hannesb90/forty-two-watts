@@ -161,7 +161,54 @@
 
       case "devices":
         if (!currentConfig.drivers) currentConfig.drivers = [];
-        html = '<div class="devices-list">';
+        // Catalog picker lives at the top: fetch on tab open, render
+        // the dropdown asynchronously (doesn't block the tab).
+        html = '<fieldset><legend>Add from catalog</legend>' +
+          '<div class="field-row"><div>' +
+          '<label>Driver <span class="help" data-help="Pick a Lua driver from the drivers/ directory. Each driver declares its capabilities (MQTT/Modbus) + which manufacturer/model it supports.">?</span></label>' +
+          '<select id="driver-catalog-picker"><option value="">Loading catalog…</option></select>' +
+          '</div><div>' +
+          '<label>Friendly name</label><input type="text" id="driver-catalog-name" placeholder="e.g. ferroamp-house">' +
+          '</div></div>' +
+          '<button class="btn-add" id="driver-catalog-add">+ Add selected</button>' +
+          '</fieldset>';
+        setTimeout(function () {
+          fetch("/api/drivers/catalog").then(function (r) { return r.json(); }).then(function (data) {
+            var sel = document.getElementById("driver-catalog-picker");
+            if (!sel) return;
+            sel.innerHTML = "";
+            var entries = (data && data.entries) || [];
+            if (entries.length === 0) {
+              sel.innerHTML = "<option value=''>(no drivers found in drivers/)</option>";
+              return;
+            }
+            entries.forEach(function (e) {
+              var opt = document.createElement("option");
+              opt.value = e.path;
+              var protoLabel = (e.protocols || []).join("+");
+              opt.textContent = (e.name || e.filename) + "  —  " + (e.manufacturer || "?") + "  [" + protoLabel + "]" + (e.version ? "  v" + e.version : "");
+              opt.dataset.protocols = protoLabel;
+              opt.dataset.id = e.id || "";
+              sel.appendChild(opt);
+            });
+          });
+          var btn = document.getElementById("driver-catalog-add");
+          if (btn) btn.addEventListener("click", function () {
+            var sel = document.getElementById("driver-catalog-picker");
+            var nameEl = document.getElementById("driver-catalog-name");
+            if (!sel || !sel.value) return;
+            var chosen = sel.options[sel.selectedIndex];
+            var protocols = (chosen.dataset.protocols || "").split("+");
+            var name = (nameEl.value || "").trim() || chosen.dataset.id || ("driver-" + currentConfig.drivers.length);
+            var driver = { name: name, lua: sel.value };
+            driver.capabilities = {};
+            if (protocols.indexOf("mqtt") >= 0) driver.capabilities.mqtt = { host: "", port: 1883 };
+            if (protocols.indexOf("modbus") >= 0) driver.capabilities.modbus = { host: "", port: 502, unit_id: 1 };
+            currentConfig.drivers.push(driver);
+            renderTab("devices");
+          });
+        }, 0);
+        html += '<div class="devices-list">';
         currentConfig.drivers.forEach(function (d, idx) {
           // Go-port config: d.wasm (or legacy d.lua), capabilities.mqtt/modbus
           var cap = d.capabilities || {};
@@ -271,12 +318,16 @@
           '</div><div>' +
           field("Longitude", "weather.longitude", "number", 18.0686) +
           '</div></div>' +
+          '<div id="weather-map" style="height:260px;border-radius:6px;margin:6px 0;background:#1e293b"></div>' +
+          '<p style="color:var(--text-dim);font-size:0.75rem;margin:-2px 0 8px">Click or drag the marker to set your location.</p>' +
           field("PV rated (W)", "weather.pv_rated_w", "number", 10000) +
           field("API key (OpenWeather only)", "weather.api_key", "text", "") +
           '</fieldset>' +
           '<p style="color:var(--text-dim);font-size:0.8rem;margin-top:8px">' +
           'met.no is free and requires no key. PV rated is your array nameplate (sum of all panels) — seeds the digital-twin prior so day-one PV forecasts are accurate. The twin refines from live telemetry automatically.' +
           '</p>';
+        // Init Leaflet after innerHTML is set
+        setTimeout(function() { initWeatherMap(); }, 0);
         break;
 
       case "batteries":
@@ -309,10 +360,12 @@
 
       case "ha":
         if (!currentConfig.homeassistant) currentConfig.homeassistant = {};
-        html = '<fieldset><legend>Home Assistant MQTT</legend>' +
+        html = '<div id="ha-status-indicator" class="ha-status-indicator">checking…</div>' +
+          '<fieldset><legend>Home Assistant MQTT</legend>' +
           '<label><input type="checkbox" data-checkbox-path="homeassistant.enabled"' + (currentConfig.homeassistant.enabled ? ' checked' : '') + '> Enabled</label>' +
           '<div class="field-row"><div>' +
-          field("Broker host", "homeassistant.broker", "text", "192.168.1.1") +
+          field("Broker host", "homeassistant.broker", "text", "192.168.1.1",
+            "IP or hostname of the MQTT broker Home Assistant uses. Typically the HA server itself (Mosquitto addon).") +
           '</div><div>' +
           field("Port", "homeassistant.port", "number", 1883) +
           '</div></div>' +
@@ -321,9 +374,37 @@
           '</div><div>' +
           field("Password", "homeassistant.password", "password", "") +
           '</div></div>' +
-          field("Publish interval (s)", "homeassistant.publish_interval_s", "number", 5) +
+          field("Publish interval (s)", "homeassistant.publish_interval_s", "number", 5,
+            "How often state topics are pushed to HA. 5 s is a good default.") +
           '</fieldset>' +
           '<p style="color:var(--text-dim);font-size:0.8rem;margin-top:8px">Changes to HA config require a restart to take effect.</p>';
+        setTimeout(function () {
+          var el = document.getElementById("ha-status-indicator");
+          if (!el) return;
+          function refresh() {
+            fetch("/api/ha/status").then(function(r){return r.json();}).then(function(d) {
+              if (!d.enabled) {
+                el.className = "ha-status-indicator ha-off";
+                el.textContent = "○  disabled in config";
+                return;
+              }
+              if (d.connected) {
+                var age = d.last_publish_ms > 0 ? Math.round((Date.now() - d.last_publish_ms)/1000) + "s ago" : "no publish yet";
+                el.className = "ha-status-indicator ha-ok";
+                el.textContent = "● connected to " + d.broker + "  ·  " + (d.sensors_announced || 0) + " sensors  ·  last publish " + age;
+              } else {
+                el.className = "ha-status-indicator ha-warn";
+                el.textContent = "⚠  not connected to " + (d.broker || "?") + "  —  check broker + credentials";
+              }
+            }).catch(function(){
+              el.className = "ha-status-indicator ha-warn";
+              el.textContent = "? status endpoint unreachable";
+            });
+          }
+          refresh();
+          window._haStatusTimer && clearInterval(window._haStatusTimer);
+          window._haStatusTimer = setInterval(refresh, 5000);
+        }, 0);
         break;
     }
     bodyEl.innerHTML = html;
@@ -374,5 +455,51 @@
     var div = document.createElement("div");
     div.textContent = s == null ? "" : String(s);
     return div.innerHTML;
+  }
+
+  function initWeatherMap() {
+    var container = document.getElementById("weather-map");
+    if (!container || !window.L) return;
+    var latInput = bodyEl.querySelector('[data-path="weather.latitude"]');
+    var lonInput = bodyEl.querySelector('[data-path="weather.longitude"]');
+    if (!latInput || !lonInput) return;
+    var lat = parseFloat(latInput.value);
+    var lon = parseFloat(lonInput.value);
+    if (isNaN(lat)) lat = 59.3293;
+    if (isNaN(lon)) lon = 18.0686;
+    // Tear down any previous instance (tab re-render)
+    if (window._weatherMap) { try { window._weatherMap.remove(); } catch (e) {} window._weatherMap = null; }
+    var map = L.map(container, { zoomControl: true }).setView([lat, lon], 11);
+    window._weatherMap = map;
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18,
+      attribution: "© OpenStreetMap"
+    }).addTo(map);
+    var marker = L.marker([lat, lon], { draggable: true }).addTo(map);
+    function setCoord(la, lo) {
+      latInput.value = la.toFixed(4);
+      lonInput.value = lo.toFixed(4);
+      setByPath(currentConfig, "weather.latitude", la);
+      setByPath(currentConfig, "weather.longitude", lo);
+    }
+    marker.on("dragend", function () {
+      var ll = marker.getLatLng();
+      setCoord(ll.lat, ll.lng);
+    });
+    map.on("click", function (e) {
+      marker.setLatLng(e.latlng);
+      setCoord(e.latlng.lat, e.latlng.lng);
+    });
+    function syncFromInputs() {
+      var la = parseFloat(latInput.value), lo = parseFloat(lonInput.value);
+      if (!isNaN(la) && !isNaN(lo)) {
+        marker.setLatLng([la, lo]);
+        map.panTo([la, lo]);
+      }
+    }
+    latInput.addEventListener("change", syncFromInputs);
+    lonInput.addEventListener("change", syncFromInputs);
+    // Leaflet sometimes mis-sizes when rendered in a hidden modal; retrigger
+    setTimeout(function () { map.invalidateSize(); }, 150);
   }
 })();

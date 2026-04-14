@@ -1,6 +1,18 @@
 -- ferroamp.lua
 -- Ferroamp EnergyHub MQTT driver
 -- Emits: PV, Battery, Meter telemetry
+
+DRIVER = {
+  id           = "ferroamp",
+  name         = "Ferroamp EnergyHub",
+  manufacturer = "Ferroamp",
+  version      = "1.0.0",
+  protocols    = { "mqtt" },
+  capabilities = { "meter", "pv", "battery" },
+  description  = "Ferroamp EnergyHub with ESO battery + SSO solar strings (3-phase).",
+  homepage     = "https://ferroamp.com",
+  authors      = { "forty-two-watts contributors" },
+}
 --
 -- Subscribes to:
 --   extapi/data/ehub  - main hub data (grid, frequency, energy counters, PV summary)

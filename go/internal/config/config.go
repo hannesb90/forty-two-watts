@@ -16,51 +16,51 @@ import (
 
 // Config is the full application config.
 type Config struct {
-	Site          Site               `yaml:"site"`
-	Fuse          Fuse               `yaml:"fuse"`
-	Drivers       []Driver           `yaml:"drivers"`
-	API           API                `yaml:"api"`
-	HomeAssistant *HomeAssistant     `yaml:"homeassistant,omitempty"`
-	State         *StateConf         `yaml:"state,omitempty"`
-	Price         *Price             `yaml:"price,omitempty"`
-	Weather       *Weather           `yaml:"weather,omitempty"`
-	Planner       *Planner           `yaml:"planner,omitempty"`
-	Batteries     map[string]Battery `yaml:"batteries,omitempty"`
+	Site          Site               `yaml:"site" json:"site"`
+	Fuse          Fuse               `yaml:"fuse" json:"fuse"`
+	Drivers       []Driver           `yaml:"drivers" json:"drivers"`
+	API           API                `yaml:"api" json:"api"`
+	HomeAssistant *HomeAssistant     `yaml:"homeassistant,omitempty" json:"homeassistant,omitempty"`
+	State         *StateConf         `yaml:"state,omitempty" json:"state,omitempty"`
+	Price         *Price             `yaml:"price,omitempty" json:"price,omitempty"`
+	Weather       *Weather           `yaml:"weather,omitempty" json:"weather,omitempty"`
+	Planner       *Planner           `yaml:"planner,omitempty" json:"planner,omitempty"`
+	Batteries     map[string]Battery `yaml:"batteries,omitempty" json:"batteries,omitempty"`
 }
 
 // Planner configures the MPC scheduler (optional — disabled if omitted).
 // Mode: "self_consumption" (default) | "cheap_charge" | "arbitrage".
 type Planner struct {
-	Enabled             bool    `yaml:"enabled"`
-	Mode                string  `yaml:"mode,omitempty"`
-	BaseLoadW           float64 `yaml:"base_load_w,omitempty"`
-	HorizonHours        int     `yaml:"horizon_hours,omitempty"`
-	IntervalMin         int     `yaml:"interval_min,omitempty"`
-	SoCMinPct           float64 `yaml:"soc_min_pct,omitempty"`
-	SoCMaxPct           float64 `yaml:"soc_max_pct,omitempty"`
-	ChargeEfficiency    float64 `yaml:"charge_efficiency,omitempty"`
-	DischargeEfficiency float64 `yaml:"discharge_efficiency,omitempty"`
-	ExportOrePerKWh     float64 `yaml:"export_ore_per_kwh,omitempty"` // 0 = use mean spot
+	Enabled             bool    `yaml:"enabled" json:"enabled"`
+	Mode                string  `yaml:"mode,omitempty" json:"mode,omitempty"`
+	BaseLoadW           float64 `yaml:"base_load_w,omitempty" json:"base_load_w,omitempty"`
+	HorizonHours        int     `yaml:"horizon_hours,omitempty" json:"horizon_hours,omitempty"`
+	IntervalMin         int     `yaml:"interval_min,omitempty" json:"interval_min,omitempty"`
+	SoCMinPct           float64 `yaml:"soc_min_pct,omitempty" json:"soc_min_pct,omitempty"`
+	SoCMaxPct           float64 `yaml:"soc_max_pct,omitempty" json:"soc_max_pct,omitempty"`
+	ChargeEfficiency    float64 `yaml:"charge_efficiency,omitempty" json:"charge_efficiency,omitempty"`
+	DischargeEfficiency float64 `yaml:"discharge_efficiency,omitempty" json:"discharge_efficiency,omitempty"`
+	ExportOrePerKWh     float64 `yaml:"export_ore_per_kwh,omitempty" json:"export_ore_per_kwh,omitempty"` // 0 = use mean spot
 }
 
 // Site is the top-level control loop config.
 type Site struct {
-	Name                 string  `yaml:"name"`
-	ControlIntervalS     int     `yaml:"control_interval_s"`
-	GridTargetW          float64 `yaml:"grid_target_w"`
-	GridToleranceW       float64 `yaml:"grid_tolerance_w"`
-	WatchdogTimeoutS     int     `yaml:"watchdog_timeout_s"`
-	SmoothingAlpha       float64 `yaml:"smoothing_alpha"`
-	Gain                 float64 `yaml:"gain"`
-	SlewRateW            float64 `yaml:"slew_rate_w"`
-	MinDispatchIntervalS int     `yaml:"min_dispatch_interval_s"`
+	Name                 string  `yaml:"name" json:"name"`
+	ControlIntervalS     int     `yaml:"control_interval_s" json:"control_interval_s"`
+	GridTargetW          float64 `yaml:"grid_target_w" json:"grid_target_w"`
+	GridToleranceW       float64 `yaml:"grid_tolerance_w" json:"grid_tolerance_w"`
+	WatchdogTimeoutS     int     `yaml:"watchdog_timeout_s" json:"watchdog_timeout_s"`
+	SmoothingAlpha       float64 `yaml:"smoothing_alpha" json:"smoothing_alpha"`
+	Gain                 float64 `yaml:"gain" json:"gain"`
+	SlewRateW            float64 `yaml:"slew_rate_w" json:"slew_rate_w"`
+	MinDispatchIntervalS int     `yaml:"min_dispatch_interval_s" json:"min_dispatch_interval_s"`
 }
 
 // Fuse describes the shared breaker limit used by the fuse guard.
 type Fuse struct {
-	MaxAmps float64 `yaml:"max_amps"`
-	Phases  int     `yaml:"phases"`
-	Voltage float64 `yaml:"voltage"`
+	MaxAmps float64 `yaml:"max_amps" json:"max_amps"`
+	Phases  int     `yaml:"phases" json:"phases"`
+	Voltage float64 `yaml:"voltage" json:"voltage"`
 }
 
 // MaxPowerW returns the total power budget for the fuse guard.
@@ -71,47 +71,47 @@ func (f Fuse) MaxPowerW() float64 {
 // Driver is one driver entry. In the Go/WASM port, WASM is the primary format.
 // Lua is kept as a legacy fallback (not implemented in go-port initially).
 type Driver struct {
-	Name               string  `yaml:"name"`
-	WASM               string  `yaml:"wasm,omitempty"` // path to .wasm file
-	Lua                string  `yaml:"lua,omitempty"`  // legacy, path to .lua file
-	IsSiteMeter        bool    `yaml:"is_site_meter,omitempty"`
-	BatteryCapacityWh  float64 `yaml:"battery_capacity_wh,omitempty"`
+	Name               string  `yaml:"name" json:"name"`
+	WASM               string  `yaml:"wasm,omitempty" json:"wasm,omitempty"` // path to .wasm file
+	Lua                string  `yaml:"lua,omitempty" json:"lua,omitempty"`  // legacy, path to .lua file
+	IsSiteMeter        bool    `yaml:"is_site_meter,omitempty" json:"is_site_meter,omitempty"`
+	BatteryCapacityWh  float64 `yaml:"battery_capacity_wh,omitempty" json:"battery_capacity_wh,omitempty"`
 
 	// Capabilities: the resources this driver is allowed to use.
 	// Unset capabilities are explicitly denied.
-	Capabilities Capabilities `yaml:"capabilities,omitempty"`
+	Capabilities Capabilities `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 
 	// Legacy protocol fields (equivalent to capabilities, still accepted
 	// for backwards compatibility with master-branch configs).
-	MQTT   *MQTTConfig   `yaml:"mqtt,omitempty"`
-	Modbus *ModbusConfig `yaml:"modbus,omitempty"`
+	MQTT   *MQTTConfig   `yaml:"mqtt,omitempty" json:"mqtt,omitempty"`
+	Modbus *ModbusConfig `yaml:"modbus,omitempty" json:"modbus,omitempty"`
 }
 
 // Capabilities explicitly scope what host resources a driver can access.
 type Capabilities struct {
-	MQTT   *MQTTConfig   `yaml:"mqtt,omitempty"`
-	Modbus *ModbusConfig `yaml:"modbus,omitempty"`
-	HTTP   *HTTPCapability `yaml:"http,omitempty"`
+	MQTT   *MQTTConfig   `yaml:"mqtt,omitempty" json:"mqtt,omitempty"`
+	Modbus *ModbusConfig `yaml:"modbus,omitempty" json:"modbus,omitempty"`
+	HTTP   *HTTPCapability `yaml:"http,omitempty" json:"http,omitempty"`
 }
 
 // MQTTConfig grants access to one MQTT broker.
 type MQTTConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port,omitempty"` // default 1883
-	Username string `yaml:"username,omitempty"`
-	Password string `yaml:"password,omitempty"`
+	Host     string `yaml:"host" json:"host"`
+	Port     int    `yaml:"port,omitempty" json:"port,omitempty"` // default 1883
+	Username string `yaml:"username,omitempty" json:"username,omitempty"`
+	Password string `yaml:"password,omitempty" json:"password,omitempty"`
 }
 
 // ModbusConfig grants access to one Modbus TCP endpoint.
 type ModbusConfig struct {
-	Host   string `yaml:"host"`
-	Port   int    `yaml:"port,omitempty"`   // default 502
-	UnitID int    `yaml:"unit_id,omitempty"` // default 1
+	Host   string `yaml:"host" json:"host"`
+	Port   int    `yaml:"port,omitempty" json:"port,omitempty"`   // default 502
+	UnitID int    `yaml:"unit_id,omitempty" json:"unit_id,omitempty"` // default 1
 }
 
 // HTTPCapability grants HTTP access to specific hostnames (future).
 type HTTPCapability struct {
-	AllowedHosts []string `yaml:"allowed_hosts"`
+	AllowedHosts []string `yaml:"allowed_hosts" json:"allowed_hosts"`
 }
 
 // EffectiveMQTT returns the driver's MQTT config, preferring capabilities over legacy.
@@ -132,74 +132,74 @@ func (d Driver) EffectiveModbus() *ModbusConfig {
 
 // API is the HTTP server config.
 type API struct {
-	Port int `yaml:"port"`
+	Port int `yaml:"port" json:"port"`
 }
 
 // HomeAssistant is the MQTT bridge config.
 type HomeAssistant struct {
-	Enabled          bool   `yaml:"enabled"`
-	Broker           string `yaml:"broker"`
-	Port             int    `yaml:"port,omitempty"`
-	Username         string `yaml:"username,omitempty"`
-	Password         string `yaml:"password,omitempty"`
-	PublishIntervalS int    `yaml:"publish_interval_s,omitempty"`
+	Enabled          bool   `yaml:"enabled" json:"enabled"`
+	Broker           string `yaml:"broker" json:"broker"`
+	Port             int    `yaml:"port,omitempty" json:"port,omitempty"`
+	Username         string `yaml:"username,omitempty" json:"username,omitempty"`
+	Password         string `yaml:"password,omitempty" json:"password,omitempty"`
+	PublishIntervalS int    `yaml:"publish_interval_s,omitempty" json:"publish_interval_s,omitempty"`
 }
 
 // StateConf is the persistent state DB config.
 type StateConf struct {
-	Path string `yaml:"path"`
+	Path string `yaml:"path" json:"path"`
 }
 
 // Price is the spot-price source config.
 type Price struct {
-	Provider         string  `yaml:"provider"` // elprisetjustnu | entsoe | none
-	Zone             string  `yaml:"zone,omitempty"`
-	GridTariffOreKwh float64 `yaml:"grid_tariff_ore_kwh,omitempty"`
-	VATPercent       float64 `yaml:"vat_percent,omitempty"`
-	APIKey           string  `yaml:"api_key,omitempty"`
+	Provider         string  `yaml:"provider" json:"provider"` // elprisetjustnu | entsoe | none
+	Zone             string  `yaml:"zone,omitempty" json:"zone,omitempty"`
+	GridTariffOreKwh float64 `yaml:"grid_tariff_ore_kwh,omitempty" json:"grid_tariff_ore_kwh,omitempty"`
+	VATPercent       float64 `yaml:"vat_percent,omitempty" json:"vat_percent,omitempty"`
+	APIKey           string  `yaml:"api_key,omitempty" json:"api_key,omitempty"`
 
 	// Currency is the ISO code for pricing (default "SEK"). ENTSOE
 	// returns EUR/MWh; we convert using ECB daily FX rates.
-	Currency string `yaml:"currency,omitempty"`
+	Currency string `yaml:"currency,omitempty" json:"currency,omitempty"`
 
 	// ExportBonusOreKwh is a per-kWh bonus on top of spot when exporting.
 	// Some retailers pay spot + fixed bonus (e.g. 60 öre in Sweden via
 	// "skattereduktion" + electricity-certificate value). Default 0.
-	ExportBonusOreKwh float64 `yaml:"export_bonus_ore_kwh,omitempty"`
+	ExportBonusOreKwh float64 `yaml:"export_bonus_ore_kwh,omitempty" json:"export_bonus_ore_kwh,omitempty"`
 
 	// ExportFeeOreKwh is a per-kWh deduction on export (e.g. transmission
 	// fees some DSOs charge for feed-in). Reduces effective export price.
-	ExportFeeOreKwh float64 `yaml:"export_fee_ore_kwh,omitempty"`
+	ExportFeeOreKwh float64 `yaml:"export_fee_ore_kwh,omitempty" json:"export_fee_ore_kwh,omitempty"`
 }
 
 // Weather is the weather-forecast source config.
 type Weather struct {
-	Provider  string  `yaml:"provider"` // met_no | openweather | none
-	Latitude  float64 `yaml:"latitude"`
-	Longitude float64 `yaml:"longitude"`
-	APIKey    string  `yaml:"api_key,omitempty"`
+	Provider  string  `yaml:"provider" json:"provider"` // met_no | openweather | none
+	Latitude  float64 `yaml:"latitude" json:"latitude"`
+	Longitude float64 `yaml:"longitude" json:"longitude"`
+	APIKey    string  `yaml:"api_key,omitempty" json:"api_key,omitempty"`
 
 	// PVRatedW is the system's nameplate PV output (W) — used as the
 	// initial twin prior AND the ceiling for naive PV estimates. If 0,
 	// we fall back to a heuristic (sum of battery_capacity_wh / 3),
 	// which is only roughly right for homes where PV and storage were
 	// sized together. Set explicitly for accurate day-1 forecasts.
-	PVRatedW float64 `yaml:"pv_rated_w,omitempty"`
+	PVRatedW float64 `yaml:"pv_rated_w,omitempty" json:"pv_rated_w,omitempty"`
 
 	// HeatingWPerDegC adds load proportional to max(18°C − outdoor_temp, 0).
 	// A rough-but-useful way to teach the planner that cold nights cost
 	// more than mild ones without running a full ML temperature fit.
 	// Typical Swedish single-family values: 200–500 W/°C. 0 disables.
-	HeatingWPerDegC float64 `yaml:"heating_w_per_degc,omitempty"`
+	HeatingWPerDegC float64 `yaml:"heating_w_per_degc,omitempty" json:"heating_w_per_degc,omitempty"`
 }
 
 // Battery is per-battery overrides (keyed by driver name in the top-level map).
 type Battery struct {
-	SoCMin        *float64 `yaml:"soc_min,omitempty"`
-	SoCMax        *float64 `yaml:"soc_max,omitempty"`
-	MaxChargeW    *float64 `yaml:"max_charge_w,omitempty"`
-	MaxDischargeW *float64 `yaml:"max_discharge_w,omitempty"`
-	Weight        *float64 `yaml:"weight,omitempty"`
+	SoCMin        *float64 `yaml:"soc_min,omitempty" json:"soc_min,omitempty"`
+	SoCMax        *float64 `yaml:"soc_max,omitempty" json:"soc_max,omitempty"`
+	MaxChargeW    *float64 `yaml:"max_charge_w,omitempty" json:"max_charge_w,omitempty"`
+	MaxDischargeW *float64 `yaml:"max_discharge_w,omitempty" json:"max_discharge_w,omitempty"`
+	Weight        *float64 `yaml:"weight,omitempty" json:"weight,omitempty"`
 }
 
 // Load parses a config file from disk. Returns a fully-validated Config.

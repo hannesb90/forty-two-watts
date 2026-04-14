@@ -326,6 +326,9 @@ func main() {
 	}
 
 	// ---- Start HTTP API ----
+	// Forward-declare haBridge so Deps can reference it; the bridge
+	// gets wired further down (HA is optional + depends on reg.Names()).
+	var haBridge *ha.Bridge
 	deps := &api.Deps{
 		Tel: tel, Ctrl: ctrl, CtrlMu: ctrlMu,
 		State: st,
@@ -341,6 +344,7 @@ func main() {
 		MPC:        mpcSvc,
 		PVModel:    pvSvc,
 		LoadModel:  loadSvc,
+		HA:         haBridge,
 		Version:    Version,
 	}
 	srv := api.New(deps)
@@ -362,7 +366,6 @@ func main() {
 	}()
 
 	// ---- HA MQTT bridge (optional) ----
-	var haBridge *ha.Bridge
 	if cfg.HomeAssistant != nil && cfg.HomeAssistant.Enabled {
 		cb := ha.CommandCallbacks{
 			SetMode: func(m string) error {
@@ -401,6 +404,7 @@ func main() {
 		} else {
 			haBridge = bridge
 			defer haBridge.Stop()
+			deps.HA = haBridge // late-binding for API
 		}
 	}
 

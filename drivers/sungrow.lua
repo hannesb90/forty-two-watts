@@ -2,6 +2,19 @@
 -- Emits: PV, Battery, Meter
 -- Protocol: Modbus TCP (port 502, unit ID 1)
 -- Reference: https://github.com/mkaiser/Sungrow-SHx-Inverter-Modbus-Home-Assistant
+
+DRIVER = {
+  id           = "sungrow-shx",
+  name         = "Sungrow SH Hybrid Inverter",
+  manufacturer = "Sungrow",
+  version      = "1.0.0",
+  protocols    = { "modbus" },
+  capabilities = { "meter", "pv", "battery" },
+  description  = "Sungrow SH-series hybrid inverters with LFP battery, via Modbus TCP.",
+  homepage     = "https://en.sungrowpower.com",
+  authors      = { "forty-two-watts contributors" },
+  tested_models = { "SH5.0RT", "SH6.0RT", "SH8.0RT", "SH10RT" },
+}
 --
 -- Register conventions:
 --   Input registers (FC 0x04): read-only telemetry

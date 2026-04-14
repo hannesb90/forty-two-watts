@@ -22,7 +22,9 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/battery"
 	"github.com/frahlg/forty-two-watts/go/internal/config"
 	"github.com/frahlg/forty-two-watts/go/internal/control"
+	"github.com/frahlg/forty-two-watts/go/internal/drivers"
 	"github.com/frahlg/forty-two-watts/go/internal/forecast"
+	"github.com/frahlg/forty-two-watts/go/internal/ha"
 	"github.com/frahlg/forty-two-watts/go/internal/loadmodel"
 	"github.com/frahlg/forty-two-watts/go/internal/mpc"
 	"github.com/frahlg/forty-two-watts/go/internal/prices"
@@ -65,6 +67,9 @@ type Deps struct {
 	// Optional: load digital-twin self-learner.
 	LoadModel *loadmodel.Service
 
+	// Optional: HA MQTT bridge (nil if disabled).
+	HA *ha.Bridge
+
 	Version string
 }
 
@@ -99,6 +104,8 @@ func (s *Server) routes() {
 	s.handle("POST /api/peak_limit",          s.handleSetPeakLimit)
 	s.handle("POST /api/ev_charging",         s.handleSetEVCharging)
 	s.handle("GET  /api/drivers",             s.handleDrivers)
+	s.handle("GET  /api/drivers/catalog",     s.handleDriversCatalog)
+	s.handle("GET  /api/ha/status",           s.handleHAStatus)
 	s.handle("GET  /api/battery_models",      s.handleGetModels)
 	s.handle("POST /api/battery_models/reset", s.handleResetModel)
 	s.handle("POST /api/self_tune/start",     s.handleSelfTuneStart)
@@ -427,6 +434,37 @@ func (s *Server) handleSetEVCharging(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDrivers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.deps.Tel.AllHealth())
+}
+
+// GET /api/drivers/catalog — list of available drivers from the
+// drivers/ directory, parsed from each .lua file's DRIVER metadata.
+// Used by the Settings UI to offer an "Add from catalog" dropdown.
+func (s *Server) handleDriversCatalog(w http.ResponseWriter, r *http.Request) {
+	// Catalog lives next to the config file by convention.
+	dir := filepath.Join(filepath.Dir(s.deps.ConfigPath), "drivers")
+	entries, err := drivers.LoadCatalog(dir)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"path": dir, "entries": []any{}, "error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"path": dir, "entries": entries})
+}
+
+// GET /api/ha/status — is the HA MQTT bridge connected?
+// Used by the Settings UI to show a live connection indicator
+// instead of silently relying on "it's saved".
+func (s *Server) handleHAStatus(w http.ResponseWriter, r *http.Request) {
+	if s.deps.HA == nil {
+		writeJSON(w, 200, map[string]any{"enabled": false})
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"enabled":          true,
+		"connected":        s.deps.HA.IsConnected(),
+		"broker":           s.deps.HA.BrokerAddr(),
+		"last_publish_ms":  s.deps.HA.LastPublishMs(),
+		"sensors_announced": s.deps.HA.SensorsAnnounced(),
+	})
 }
 
 // ---- /api/battery_models ----
