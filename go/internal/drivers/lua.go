@@ -124,7 +124,10 @@ func (d *LuaDriver) Command(ctx context.Context, cmdJSON []byte) error {
 		return err
 	}
 	action, _ := cmd["action"].(string)
-	power, _ := cmd["w"].(float64)
+	power, ok := cmd["power_w"].(float64)
+	if !ok {
+		power, _ = cmd["w"].(float64)
+	}
 	t := goToLua(d.L, cmd)
 	return d.L.CallByParam(lua.P{Fn: fn, NRet: 0, Protect: true},
 		lua.LString(action), lua.LNumber(power), t)
