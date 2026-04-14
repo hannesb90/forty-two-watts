@@ -216,7 +216,8 @@ func lookupPV(forecasts []state.ForecastPoint, ts int64) float64 {
 }
 
 // currentSoCPct averages SoC across battery readings in the telemetry store.
-// Falls back to `fallback` if no readings are present.
+// Telemetry stores SoC as a fraction in [0, 1]; the MPC expects [0, 100].
+// Falls back to `fallback` (already in percent) if no readings are present.
 func currentSoCPct(t *telemetry.Store, fallback float64) float64 {
 	if t == nil {
 		return fallback
@@ -236,5 +237,5 @@ func currentSoCPct(t *telemetry.Store, fallback float64) float64 {
 	if n == 0 {
 		return fallback
 	}
-	return sum / float64(n)
+	return sum / float64(n) * 100.0
 }

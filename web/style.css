@@ -887,6 +887,10 @@ footer {
   font-weight: 600;
   color: var(--text);
 }
+.plan-actions { display: flex; align-items: center; gap: 12px; }
+.plan-summary { font-size: 0.85rem; color: var(--text-dim, #94a3b8); }
+#plan-section { margin-top: 18px; }
+#plan-chart { width: 100%; display: block; }
 .models-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
