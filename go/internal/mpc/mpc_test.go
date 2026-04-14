@@ -279,6 +279,114 @@ func TestExportBonusMakesArbitrageMoreProfitable(t *testing.T) {
 	}
 }
 
+// ---- Rain-check: export-now vs store-for-later ----
+//
+// Scenario: morning price is HIGH, midday price drops, evening is
+// moderate. PV peaks at midday (typical curve). What should arbitrage do?
+//   - morning: export PV immediately — price is good right now
+//   - midday: store PV — price is low, storing banks kWh for evening
+//   - evening: discharge battery — realize the arbitrage
+//
+// This lines up with "when price is high in the morning we'd rather
+// sell PV than store it; when price dips at midday we'd rather store
+// than sell cheap". Confirms the DP handles opportunity-cost
+// reasoning correctly.
+func TestExportWhenMorningIsHighStoreWhenMiddayIsLow(t *testing.T) {
+	// 24 × 1-hour slots. PV is a Gaussian centered at 12:00 peaking
+	// at 8 kW. Prices: morning 07-09 = 200 öre, midday 11-14 = 50,
+	// evening 17-20 = 150, else 100.
+	slots := make([]Slot, 24)
+	for h := 0; h < 24; h++ {
+		var price float64
+		switch {
+		case h >= 7 && h <= 9:
+			price = 200
+		case h >= 11 && h <= 14:
+			price = 50
+		case h >= 17 && h <= 20:
+			price = 150
+		default:
+			price = 100
+		}
+		var pvW float64
+		if h >= 6 && h <= 18 {
+			// Gaussian peak at 12, width 3h.
+			pvW = 8000 * math.Exp(-0.5*math.Pow(float64(h-12)/3.0, 2))
+		}
+		slots[h] = Slot{
+			StartMs:    int64(h) * 3600 * 1000,
+			LenMin:     60,
+			PriceOre:   price,
+			SpotOre:    price * 0.7, // rough: strip tariff + VAT for export
+			PVW:        -pvW,
+			LoadW:      500,
+			Confidence: 1.0,
+		}
+	}
+
+	p := Params{
+		Mode:                ModeArbitrage,
+		SoCLevels:           41,
+		CapacityWh:          10000,
+		SoCMinPct:           10,
+		SoCMaxPct:           95,
+		InitialSoCPct:       40,
+		ActionLevels:        21,
+		MaxChargeW:          5000,
+		MaxDischargeW:       5000,
+		ChargeEfficiency:    0.95,
+		DischargeEfficiency: 0.95,
+		// Per-slot export pricing: leave ExportOrePerKWh=0 and let the
+		// DP compute slot.SpotOre + bonus − fee. This is the realistic
+		// Nordic setup where export earns spot, not a fixed rate.
+		ExportOrePerKWh:  0,
+		TerminalSoCPrice: 100,
+	}
+	plan := Optimize(slots, p)
+
+	sumMorningCharge := 0.0 // how much of the high-price PV gets stored
+	sumMiddayCharge := 0.0  // how much of the cheap-price PV gets stored
+	sumEveningDischarge := 0.0
+	morningExport := 0.0 // how much leaves the site 07-09
+	for _, a := range plan.Actions {
+		h := int(a.SlotStartMs / (3600 * 1000))
+		switch {
+		case h >= 7 && h <= 9:
+			if a.BatteryW > 0 {
+				sumMorningCharge += a.BatteryW
+			}
+			if a.GridW < 0 {
+				morningExport += -a.GridW
+			}
+		case h >= 11 && h <= 14:
+			if a.BatteryW > 0 {
+				sumMiddayCharge += a.BatteryW
+			}
+		case h >= 17 && h <= 20:
+			if a.BatteryW < 0 {
+				sumEveningDischarge += -a.BatteryW
+			}
+		}
+	}
+
+	t.Logf("morning charge W-hours : %6.0f  (should be low — sell now, not store)", sumMorningCharge)
+	t.Logf("morning grid export Wh : %6.0f  (should be high — sell the PV)", morningExport)
+	t.Logf("midday  charge W-hours : %6.0f  (should be high — store the cheap PV)", sumMiddayCharge)
+	t.Logf("evening discharge Wh   : %6.0f  (should realise the arbitrage)", sumEveningDischarge)
+
+	// Rain-check assertions.
+	if sumMiddayCharge <= sumMorningCharge {
+		t.Errorf("midday charge (%.0f) should exceed morning charge (%.0f) — DP should prefer storing cheap PV",
+			sumMiddayCharge, sumMorningCharge)
+	}
+	if morningExport <= 0 {
+		t.Errorf("morning export should be positive — high-price PV should leave the site, got %.0f", morningExport)
+	}
+	if sumEveningDischarge <= 0 {
+		t.Errorf("evening discharge should be positive to realise arbitrage, got %.0f", sumEveningDischarge)
+	}
+}
+
 // ---- Solar curtailment ----
 
 func TestCurtailmentFlagsNegativeExportSlots(t *testing.T) {

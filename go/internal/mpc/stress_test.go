@@ -74,7 +74,8 @@ func makeSlots(prices, pvs, loads []float64, startMs int64) []Slot {
 			StartMs:  startMs + int64(i)*15*60*1000,
 			LenMin:   15,
 			PriceOre: prices[i],
-			PVW:      -pvs[i], // site sign: PV negative
+			SpotOre:  prices[i] * 0.7, // strip VAT + grid tariff for export
+			PVW:      -pvs[i],
 			LoadW:    loads[i],
 		}
 	}
@@ -169,8 +170,12 @@ func runMode(slots []Slot, initSoC float64, mode Mode, capWh, maxChg, maxDis flo
 		MaxDischargeW:       maxDis,
 		ChargeEfficiency:    0.95,
 		DischargeEfficiency: 0.95,
-		TerminalSoCPrice:    mean,
-		ExportOrePerKWh:     mean * 0.7, // typical: spot only, no tariff/VAT
+		TerminalSoCPrice: mean,
+		// Per-slot export pricing (slot.SpotOre + bonus − fee). Reflects
+		// the real Nordic setup where exporting earns the current
+		// spot, not a flat average. Required for the DP to see
+		// morning-export vs midday-charge arbitrage.
+		ExportOrePerKWh: 0,
 	}
 	return Optimize(slots, p)
 }

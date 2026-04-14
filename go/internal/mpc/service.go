@@ -366,21 +366,12 @@ func (s *Service) replan(_ context.Context) *Plan {
 		}
 		p.TerminalSoCPrice = sum / float64(len(prices))
 	}
-	// Default export revenue: mean spot (no VAT, no grid tariff) plus
-	// optional ExportBonusOreKwh (e.g. retailer premium / tax reduction)
-	// minus ExportFeeOreKwh (DSO feed-in fee, if any). ExportOrePerKWh
-	// in Params overrides all of this if set explicitly.
-	if p.ExportOrePerKWh <= 0 {
-		var sum float64
-		for _, pr := range prices {
-			sum += pr.SpotOreKwh
-		}
-		meanSpot := sum / float64(len(prices))
-		p.ExportOrePerKWh = meanSpot + s.ExportBonusOreKwh - s.ExportFeeOreKwh
-		if p.ExportOrePerKWh < 0 {
-			p.ExportOrePerKWh = 0
-		}
-	}
+	// Export pricing is per-slot now: pass bonus/fee into Params so
+	// the DP can compute `slot.SpotOre + bonus − fee` per slot. Leave
+	// p.ExportOrePerKWh at 0 (operators can still set it via Params
+	// to force a flat feed-in tariff).
+	p.ExportBonusOreKwh = s.ExportBonusOreKwh
+	p.ExportFeeOreKwh = s.ExportFeeOreKwh
 
 	plan := Optimize(slots, p)
 
@@ -505,6 +496,7 @@ func buildSlots(prices []state.PricePoint, forecasts []state.ForecastPoint, base
 			StartMs:    pr.SlotTsMs,
 			LenMin:     slotLen,
 			PriceOre:   pr.TotalOreKwh,
+			SpotOre:    pr.SpotOreKwh,
 			PVW:        -math.Abs(pvW),
 			LoadW:      loadW,
 			Confidence: conf,

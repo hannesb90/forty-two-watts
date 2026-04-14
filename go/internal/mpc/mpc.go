@@ -64,6 +64,7 @@ type Slot struct {
 	StartMs  int64
 	LenMin   int
 	PriceOre float64 // total consumer öre/kWh (incl. grid + VAT) — used for IMPORT cost
+	SpotOre  float64 // raw spot öre/kWh — used for EXPORT revenue (before bonus/fee)
 	PVW      float64 // negative (site sign). 0 if no forecast.
 	LoadW    float64 // positive (site sign). Defaults to a flat baseline.
 
@@ -101,10 +102,16 @@ type Params struct {
 	// default is the mean price over the horizon.
 	TerminalSoCPrice float64
 
-	// Export revenue. When grid_w < 0 we earn ExportOrePerKWh × |grid_kwh|.
-	// Typical Swedish default: spot price only (no grid tariff, no VAT),
-	// so pass the mean spot öre/kWh here, NOT the consumer total.
-	ExportOrePerKWh float64
+	// Export revenue. Two modes:
+	//   - If ExportOrePerKWh > 0, every slot earns this flat rate on
+	//     export. Useful for operators with a fixed feed-in tariff.
+	//   - If ExportOrePerKWh == 0, each slot earns
+	//         slot.SpotOre + ExportBonusOreKwh − ExportFeeOreKwh
+	//     (clamped to zero) — per-slot pricing, which the DP needs to
+	//     see morning-vs-midday arbitrage opportunities.
+	ExportOrePerKWh    float64
+	ExportBonusOreKwh  float64
+	ExportFeeOreKwh    float64
 }
 
 // Action is one scheduled battery target.
@@ -188,6 +195,24 @@ func Optimize(slots []Slot, p Params) Plan {
 	effPrice := func(s Slot) float64 {
 		return s.Confidence*s.PriceOre + (1-s.Confidence)*meanPrice
 	}
+	// slotExportOre: per-slot export revenue. When Params.ExportOrePerKWh
+	// is set, it wins (fixed feed-in tariff). Otherwise each slot earns
+	// spot + bonus − fee, clamped at zero. Without this, the DP saw
+	// flat export revenue across the day and couldn't prefer "export
+	// at high-price morning, charge at cheap midday".
+	slotExportOre := func(s Slot) float64 {
+		if p.ExportOrePerKWh > 0 {
+			return p.ExportOrePerKWh
+		}
+		v := s.SpotOre + p.ExportBonusOreKwh - p.ExportFeeOreKwh
+		// Confidence blend on the same principle as import price.
+		mean := meanPrice * 0.7 // rough: spot ≈ 70% of consumer total
+		v = s.Confidence*v + (1-s.Confidence)*mean
+		if v < 0 {
+			v = 0
+		}
+		return v
+	}
 
 	// Action grid spans −MaxDischargeW … +MaxChargeW. Forcing an odd
 	// ActionLevels puts 0 exactly at the midpoint.
@@ -249,23 +274,15 @@ func Optimize(slots []Slot, p Params) Plan {
 				}
 
 				// Per-slot cost in öre. Import cost at consumer price;
-				// export revenue at ExportOrePerKWh (may be 0). Both
-				// sides use confidence-blended price so forecasted
-				// slots nudge less aggressively.
+				// export revenue at the slot's spot + bonus − fee.
+				// Both sides are confidence-blended so ML-forecasted
+				// slots nudge the DP less aggressively.
 				gridKWh := gridW * dtH / 1000.0
-				ep := effPrice(slot)
 				var cost float64
 				if gridKWh > 0 {
-					cost = ep * gridKWh
+					cost = effPrice(slot) * gridKWh
 				} else {
-					exportOre := p.ExportOrePerKWh
-					// When price is blended lower-confidence, shrink
-					// export revenue too so we don't over-commit to
-					// selling into a forecasted peak.
-					if slot.Confidence < 1 {
-						exportOre = slot.Confidence*p.ExportOrePerKWh + (1-slot.Confidence)*meanPrice*0.7
-					}
-					cost = -exportOre * (-gridKWh)
+					cost = -slotExportOre(slot) * (-gridKWh)
 				}
 
 				// Next SoC index: linear interpolation between floor/ceil.
@@ -331,14 +348,20 @@ func Optimize(slots []Slot, p Params) Plan {
 		gridW := slot.LoadW + slot.PVW + actW
 		gridKWh := gridW * dtH / 1000.0
 		// Report the ACTUAL expected cost using the raw (un-blended)
-		// price, not the effective-blended price. The UI summary
-		// reflects "what we'd actually pay if prices hold" — the
-		// blending only affects the decision, not the reported impact.
+		// prices so the UI summary reflects "what we'd actually pay
+		// if prices hold". Blending is a decision lens only.
 		var cost float64
 		if gridKWh > 0 {
 			cost = slot.PriceOre * gridKWh
 		} else {
-			cost = -p.ExportOrePerKWh * (-gridKWh)
+			rawExport := p.ExportOrePerKWh
+			if rawExport <= 0 {
+				rawExport = slot.SpotOre + p.ExportBonusOreKwh - p.ExportFeeOreKwh
+				if rawExport < 0 {
+					rawExport = 0
+				}
+			}
+			cost = -rawExport * (-gridKWh)
 		}
 		totalCost += cost
 		plan.Actions = append(plan.Actions, Action{

@@ -194,15 +194,27 @@ annual SEK savings across six scenario types weighted by prevalence:
 
 | Scenario | Weight | Self-cons | Cheap-charge | Arbitrage |
 |---|---:|---:|---:|---:|
-| sunny_mild | 25% | 430 | 438 | 479 |
-| cloudy | 30% | 596 | 1 038 | 1 086 |
-| price_spike | 5% | 753 | 2 239 | 2 391 |
-| flat_prices | 10% | 106 | 106 | 111 |
-| cheap_night | 15% | 613 | 1 312 | 1 640 |
-| solar_surplus | 15% | 112 | 112 | 131 |
-| **TOTAL SEK/yr** | | **2 610** | **5 245** | **5 839** |
+| sunny_mild | 25% | −55 | −51 | 63 |
+| cloudy | 30% | 523 | 1 010 | 1 088 |
+| price_spike | 5% | 753 | 2 239 | 2 388 |
+| flat_prices | 10% | 116 | 117 | 121 |
+| cheap_night | 15% | 602 | 1 278 | 1 726 |
+| solar_surplus | 15% | −504 | −504 | −421 |
+| **TOTAL SEK/yr** | | **1 435** | **4 088** | **4 964** |
 
-Figures based on a 15 kWh / 5 kW battery and typical Nordic-ish prices
-(see scenario generators in `stress_test.go`). Arbitrage adds
-~3 200 SEK/yr over self-consumption but depends heavily on price
-volatility — a stable market year narrows the gap.
+Figures based on a 15 kWh / 5 kW battery with **per-slot export
+pricing** (export earns the current slot's spot, not a horizon
+average — reflects the real Nordic setup).
+
+Signal to read from the table:
+
+- **Arbitrage dominates volatile days** (price_spike, cheap_night)
+  where the battery's job is genuinely "buy low, sell high".
+- **Self-consumption can lose money on high-PV-surplus days** —
+  cycling the battery through round-trip losses to export at
+  midday's low spot is a net loss vs. just exporting PV directly.
+- **Cheap-charge + Arbitrage** close the gap on those days because
+  they're smart enough to _not_ cycle unnecessarily.
+
+Total annual savings depend heavily on market volatility; a stable
+market year narrows the gap between the three modes.
