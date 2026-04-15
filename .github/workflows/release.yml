@@ -47,10 +47,17 @@ jobs:
           # Pin to a known-good major. Plugins listed here mirror
           # .releaserc.json so the action installer picks them up
           # without needing a package.json in the repo.
+          #
+          # conventional-changelog-conventionalcommits is the preset
+          # backing the `conventionalcommits` config in .releaserc.json
+          # (the analyzer + notes generator look it up by name at
+          # runtime, so it must be in node_modules even though we
+          # never import it directly).
           semantic_version: 24
           extra_plugins: |
             @semantic-release/changelog@6
             @semantic-release/git@10
+            conventional-changelog-conventionalcommits@8
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
