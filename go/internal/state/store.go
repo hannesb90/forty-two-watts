@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -151,6 +152,26 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (driver_id, metric_id, ts_ms)
 		) WITHOUT ROWID, STRICT`,
 		`CREATE INDEX IF NOT EXISTS idx_ts_samples_ts ON ts_samples(ts_ms)`,
+
+		// ---- Devices: hardware-stable identity for each driver ----
+		// device_id resolution priority:
+		//   1. make + ":" + serial          (canonical, set via host.set_sn)
+		//   2. "mac:" + arp_lookup(host)    (L2-stable for TCP devices)
+		//   3. "ep:" + protocol + ":" + endpoint  (last resort)
+		// Persisted state (battery_models, etc.) is keyed on device_id, so
+		// renaming a driver in config or removing/re-adding it doesn't
+		// orphan the trained model.
+		`CREATE TABLE IF NOT EXISTS devices (
+			device_id     TEXT PRIMARY KEY NOT NULL,
+			driver_name   TEXT NOT NULL,
+			make          TEXT,
+			serial        TEXT,
+			mac           TEXT,
+			endpoint      TEXT,
+			first_seen_ms INTEGER NOT NULL,
+			last_seen_ms  INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_name ON devices(driver_name)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -238,33 +259,66 @@ func (s *Store) LoadTelemetry(key string) (string, bool) {
 // ---- Battery models ----
 
 // SaveBatteryModel stores the JSON-serialized model state for a driver.
+// The storage key is the resolved device_id when known (so renames don't
+// orphan trained state); falls back to the driver name during cold-start
+// before any device has reported its identity.
 func (s *Store) SaveBatteryModel(name, json string) error {
-	_, err := s.db.Exec(`INSERT INTO battery_models (name, json) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET json = excluded.json`, name, json)
+	key := s.batteryModelKey(name)
+	_, err := s.db.Exec(`INSERT INTO battery_models (name, json) VALUES (?, ?)
+		ON CONFLICT (name) DO UPDATE SET json = excluded.json`, key, json)
 	return err
 }
 
-// LoadAllBatteryModels returns all stored model states keyed by driver name.
+// LoadAllBatteryModels returns all stored model states keyed by the
+// CURRENT driver_name (looked up via the devices table). Rows whose
+// device_id has no matching driver in this config are skipped silently —
+// they belong to drivers the operator has removed from the YAML.
+//
+// Deadlock note: SetMaxOpenConns(1) means we cannot run two queries at
+// once. Pull all device rows BEFORE opening the battery_models query.
 func (s *Store) LoadAllBatteryModels() (map[string]string, error) {
-	rows, err := s.db.Query(`SELECT name, json FROM battery_models`)
-	if err != nil {
-		return nil, err
+	// Phase 1: build device_id → driver_name reverse map.
+	rev := make(map[string]string)
+	if drows, err := s.db.Query(`SELECT device_id, driver_name FROM devices`); err == nil {
+		for drows.Next() {
+			var id, n string
+			if err := drows.Scan(&id, &n); err == nil { rev[id] = n }
+		}
+		drows.Close()
 	}
+	// Phase 2: read battery_models, translating keys via rev.
+	rows, err := s.db.Query(`SELECT name, json FROM battery_models`)
+	if err != nil { return nil, err }
 	defer rows.Close()
 	out := make(map[string]string)
 	for rows.Next() {
 		var name, js string
-		if err := rows.Scan(&name, &js); err != nil {
-			return out, err
+		if err := rows.Scan(&name, &js); err != nil { return out, err }
+		if n, ok := rev[name]; ok {
+			out[n] = js
+		} else if !strings.Contains(name, ":") {
+			// Legacy driver-name key — pass through (migration covers this on next tick).
+			out[name] = js
 		}
-		out[name] = js
 	}
 	return out, rows.Err()
 }
 
 // DeleteBatteryModel removes a stored model (used when resetting).
 func (s *Store) DeleteBatteryModel(name string) error {
-	_, err := s.db.Exec(`DELETE FROM battery_models WHERE name = ?`, name)
+	key := s.batteryModelKey(name)
+	_, err := s.db.Exec(`DELETE FROM battery_models WHERE name = ?`, key)
 	return err
+}
+
+// batteryModelKey resolves a driver name to its canonical storage key:
+// device_id when known, otherwise the raw driver name (legacy / cold
+// start before identity has been registered).
+func (s *Store) batteryModelKey(driverName string) string {
+	if dev := s.LookupDeviceByDriverName(driverName); dev != nil && dev.DeviceID != "" {
+		return dev.DeviceID
+	}
+	return driverName
 }
 
 // ---- History tiers ----

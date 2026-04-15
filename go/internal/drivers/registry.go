@@ -23,6 +23,9 @@ type Registry struct {
 	MQTTFactory func(name string, c *config.MQTTConfig) (MQTTCap, error)
 	// ModbusFactory creates a Modbus capability.
 	ModbusFactory func(name string, c *config.ModbusConfig) (ModbusCap, error)
+	// ARPLookup resolves a hostname/IP to a MAC for L2-stable identity.
+	// Optional — when nil, devices fall back to endpoint-hash IDs.
+	ARPLookup func(host string) (mac string, ok bool)
 
 	mu  sync.Mutex
 	rec map[string]*runningDriver
@@ -112,6 +115,12 @@ func (r *Registry) Add(ctx context.Context, cfg config.Driver) error {
 			return fmt.Errorf("mqtt capability: %w", err)
 		}
 		env.WithMQTT(cap)
+		env.SetEndpoint(fmt.Sprintf("mqtt://%s:%d", mq.Host, mq.Port))
+		// Best-effort MAC resolution. Cross-VLAN devices return ""; that's
+		// fine — device_id falls back to the endpoint.
+		if r.ARPLookup != nil {
+			if mac, ok := r.ARPLookup(mq.Host); ok { env.SetMAC(mac) }
+		}
 	}
 	if mb := cfg.EffectiveModbus(); mb != nil && r.ModbusFactory != nil {
 		cap, err := r.ModbusFactory(cfg.Name, mb)
@@ -119,6 +128,10 @@ func (r *Registry) Add(ctx context.Context, cfg config.Driver) error {
 			return fmt.Errorf("modbus capability: %w", err)
 		}
 		env.WithModbus(cap)
+		env.SetEndpoint(fmt.Sprintf("modbus://%s:%d", mb.Host, mb.Port))
+		if r.ARPLookup != nil {
+			if mac, ok := r.ARPLookup(mb.Host); ok { env.SetMAC(mac) }
+		}
 	}
 
 	// Pick driver runtime based on file extension. Lua is preferred
@@ -254,6 +267,16 @@ func (r *Registry) SendDefault(ctx context.Context, name string) error {
 }
 
 // Names returns the currently registered driver names.
+// Env returns the HostEnv for a driver, or nil if not registered.
+// Used by main to read identity (make/sn/mac/endpoint) after init.
+func (r *Registry) Env(name string) *HostEnv {
+	r.mu.Lock()
+	rd, ok := r.rec[name]
+	r.mu.Unlock()
+	if !ok { return nil }
+	return rd.env
+}
+
 func (r *Registry) Names() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()

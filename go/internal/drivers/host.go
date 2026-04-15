@@ -52,9 +52,14 @@ type HostEnv struct {
 	// Desired poll interval — driver can set via host.set_poll_interval OR
 	// return it from driver_poll. We persist the last hint here.
 	PollIntervalMS int32
-	// Identity set by driver
-	Make string
-	SN   string
+	// Identity set by driver / capability layer.
+	// Make + SN are reported via host.set_make / host.set_sn.
+	// Endpoint is the protocol+host+port string set by the registry when
+	// it wires the capability (see WithEndpoint).
+	Make     string
+	SN       string
+	MAC      string // resolved by ARP after first connection (best-effort)
+	Endpoint string // e.g. "modbus://192.168.1.1:502" or "mqtt://broker:1883"
 }
 
 // NewHostEnv creates a fresh host environment for a driver.
@@ -165,6 +170,26 @@ func (h *HostEnv) Identity() (make, sn string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.Make, h.SN
+}
+
+// FullIdentity returns every identity bit known to the host so callers
+// (the registry) can compute a stable device_id.
+func (h *HostEnv) FullIdentity() (make, sn, mac, endpoint string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.Make, h.SN, h.MAC, h.Endpoint
+}
+
+// SetEndpoint records the protocol-specific connection string for this
+// driver so it can participate in device_id resolution. Called by main
+// when wiring the MQTT/Modbus capability.
+func (h *HostEnv) SetEndpoint(ep string) {
+	h.mu.Lock(); h.Endpoint = ep; h.mu.Unlock()
+}
+
+// SetMAC records the L2 hardware address discovered via ARP.
+func (h *HostEnv) SetMAC(mac string) {
+	h.mu.Lock(); h.MAC = mac; h.mu.Unlock()
 }
 
 // ---- MQTT proxy ----

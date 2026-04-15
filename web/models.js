@@ -22,6 +22,13 @@
   let lastModels = {};
   let tunePollHandle = null;
 
+  // Expose the latest models payload globally so app.js renderDrivers can
+  // inline the model panel in the same pass it renders the driver card.
+  // This prevents the model from "blinking" between the two polls (which
+  // each owned a different DOM element on different intervals).
+  window._lastBatteryModels = lastModels;
+  window.renderInlineBatteryModel = function () { return ""; };
+
   // ---- Models grid: rendered once per /api/battery_models poll ----
 
   function fetchModels() {
@@ -30,18 +37,86 @@
       .then(function (data) {
         if (!data) return;
         lastModels = data;
+        window._lastBatteryModels = data;
         renderModels(data);
       })
       .catch(function () { /* silent */ });
   }
 
   function renderModels(models) {
-    var names = Object.keys(models).sort();
-    if (names.length === 0) {
-      grid.innerHTML = '<div style="color:var(--text-dim);font-size:0.85rem;padding:12px">No battery models yet — add a battery driver and wait a few cycles.</div>';
-      return;
-    }
-    grid.innerHTML = names.map(function (name) { return renderCard(name, models[name]); }).join("");
+    // Models are now drawn by app.js inside each driver card (via
+    // renderInlineBatteryModel exposed below). We just keep #models-grid
+    // empty — it stays in the DOM only as the home for the Self-tune
+    // button + as a fallback for orphan models without a matching driver.
+    if (grid) grid.innerHTML = '';
+  }
+
+  // Exposed to app.js: returns the model HTML for a driver name (or "" if
+  // we don't have a model for it yet). Called inside renderDrivers so the
+  // driver card and model are always rendered together — no race.
+  window.renderInlineBatteryModel = function (name) {
+    var m = lastModels[name];
+    if (!m) return "";
+    return renderInlineModel(name, m);
+  };
+
+  // Minimal CSS.escape polyfill — only need it to escape driver names that
+  // happen to contain characters CSS doesn't allow in attribute selectors.
+  function cssEscape(s) {
+    if (window.CSS && window.CSS.escape) return window.CSS.escape(s);
+    return s.replace(/[^a-zA-Z0-9_-]/g, function (c) { return "\\" + c; });
+  }
+
+  // Inline model panel rendered inside a driver-card. Compact summary
+  // always shown; details unfold on click.
+  function renderInlineModel(name, m) {
+    var conf = (m.confidence * 100).toFixed(0) + "%";
+    var cascadeBadge = m.confidence >= 0.5
+      ? '<span style="color:#22c55e;font-size:0.7rem">● cascade</span>'
+      : '<span style="color:#f59e0b;font-size:0.7rem">○ direct</span>';
+    var health = m.health_score;
+    var healthPct = (health * 100).toFixed(0);
+    var healthClass = health >= 0.8 ? "health-good" : health >= 0.5 ? "health-warn" : "health-bad";
+    var driftPerDay = m.health_drift_per_day || 0;
+    var driftStr = driftPerDay === 0
+      ? "stable"
+      : (driftPerDay > 0 ? "+" : "") + (driftPerDay * 100).toFixed(2) + "%/day";
+    var driftClass = Math.abs(driftPerDay) < 0.001 ? "tune-delta-neutral"
+      : driftPerDay < 0 ? "tune-delta-negative" : "tune-delta-positive";
+
+    var expandKey = "model-expanded:" + name;
+    var expanded = localStorage.getItem(expandKey) === "1";
+    var caret = expanded ? "▾" : "▸";
+
+    var details = !expanded ? "" :
+      '<div class="model-stats" style="margin-top:6px">' +
+      '<span class="model-stat-label">τ (response)</span>' +
+      '<span class="model-stat-value">' + m.tau_s.toFixed(2) + ' s</span>' +
+      '<span class="model-stat-label">gain</span>' +
+      '<span class="model-stat-value">' + m.gain.toFixed(3) + '</span>' +
+      '<span class="model-stat-label">deadband</span>' +
+      '<span class="model-stat-value">' + (m.deadband_w || 0).toFixed(0) + ' W</span>' +
+      '<span class="model-stat-label">calibrated</span>' +
+      '<span class="model-stat-value">' + (m.last_calibrated_ts_ms ? humanAge((Date.now() - m.last_calibrated_ts_ms) / 1000) : "never") + '</span>' +
+      '</div>' +
+      '<button class="btn-reset-model" data-reset-battery="' + esc(name) + '" ' +
+      'style="margin-top:6px;padding:4px 10px;font-size:0.7rem;background:var(--surface2);' +
+      'border:1px solid var(--border);color:var(--text-dim);border-radius:3px;cursor:pointer;width:100%">' +
+      '↻ Reset model' +
+      '</button>';
+
+    return '<div class="driver-model-panel">' +
+      '<div class="driver-model-header" data-expand="' + esc(name) + '" style="cursor:pointer">' +
+      '<span class="driver-model-title">' + caret + ' Model · ' + cascadeBadge + '</span>' +
+      '<span class="driver-model-meta">' + m.n_samples + ' samples · ' + conf + '</span>' +
+      '</div>' +
+      '<div class="model-bar" style="margin-top:4px"><div class="model-bar-fill" style="width:' + healthPct + '%"></div></div>' +
+      '<div class="model-health-text">' +
+      '<span class="' + healthClass + '">health ' + healthPct + '%</span>' +
+      '<span class="' + driftClass + '">' + driftStr + '</span>' +
+      '</div>' +
+      details +
+      '</div>';
   }
 
   function renderCard(name, m) {
@@ -105,10 +180,12 @@
     return '<div class="model-card">' + headerLine + summary + details + '</div>';
   }
 
-  // Expand/collapse on header click. Use closest() so clicks on the inner
-  // spans still toggle the card. Persisted to localStorage so state
-  // survives polling re-renders.
-  grid.addEventListener("click", function (e) {
+  // Expand/collapse on header click. Listen on document because the model
+  // panel now lives inside each driver card (rendered by app.js), not
+  // inside #models-grid. Use closest() so clicks on inner spans still
+  // toggle the card. State persisted to localStorage so it survives the
+  // 3s re-render cycle.
+  document.addEventListener("click", function (e) {
     var hdr = e.target.closest && e.target.closest("[data-expand]");
     if (hdr && !e.target.dataset.resetBattery) {
       var name = hdr.dataset.expand;

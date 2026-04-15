@@ -122,6 +122,7 @@ func (s *Server) routes() {
 	s.handle("POST /api/loadmodel/reset",     s.handleLoadModelReset)
 	s.handle("GET  /api/series",              s.handleSeries)
 	s.handle("GET  /api/series/catalog",      s.handleSeriesCatalog)
+	s.handle("GET  /api/devices",             s.handleDevices)
 
 	// ---- Static web UI ----
 	// Everything not matched above falls through to the static server.
@@ -767,6 +768,32 @@ func (s *Server) handleSeriesCatalog(w http.ResponseWriter, r *http.Request) {
 		"drivers": drivers,
 		"metrics": metrics,
 	})
+}
+
+// handleDevices: GET /api/devices
+// Returns every registered device with its hardware-stable identity. UIs
+// surface this in driver cards (small "SN: ABC" line) and in Settings →
+// Devices so the operator can see how each driver is identified.
+func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
+	devs, err := s.deps.State.AllDevices()
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	out := make([]map[string]any, len(devs))
+	for i, d := range devs {
+		out[i] = map[string]any{
+			"device_id":     d.DeviceID,
+			"driver_name":   d.DriverName,
+			"make":          d.Make,
+			"serial":        d.Serial,
+			"mac":           d.MAC,
+			"endpoint":      d.Endpoint,
+			"first_seen_ms": d.FirstSeenMs,
+			"last_seen_ms":  d.LastSeenMs,
+		}
+	}
+	writeJSON(w, 200, map[string]any{"devices": out})
 }
 
 // ---- PV digital twin ----

@@ -233,10 +233,13 @@
       <div class="drivers-grid" id="drivers-grid"></div>
     </section>
 
-    <!-- Battery Models — learned per-battery dynamics (RLS) + health + self-tune -->
+    <!-- Battery Models — now embedded inline in each driver card (see
+         renderDrivers + models.js renderInlineModel). This section keeps
+         the Self-tune button accessible and acts as a fallback container
+         when a model is reported for a driver we don't render. -->
     <section id="models-section" class="advanced-only">
       <div class="section-header">
-        <h2>Battery Models</h2>
+        <h2 style="font-size:0.9rem;color:var(--text-dim)">Calibration</h2>
         <button id="self-tune-btn" class="btn-send">Self-tune</button>
       </div>
       <div class="models-grid" id="models-grid"></div>
@@ -267,11 +270,11 @@
     <span class="footer-tagline">Don't Panic 🐬</span>
   </footer>
 
-  <script src="/app.js?v=c53c964"></script>
-  <script src="/settings.js?v=c53c964"></script>
-  <script src="/models.js?v=c53c964"></script>
-  <script src="/plan.js?v=c53c964"></script>
-  <script src="/twins.js?v=c53c964"></script>
+  <script src="/app.js?v=de88f43m"></script>
+  <script src="/settings.js?v=de88f43m"></script>
+  <script src="/models.js?v=de88f43m"></script>
+  <script src="/plan.js?v=de88f43m"></script>
+  <script src="/twins.js?v=de88f43m"></script>
   <script>
     // UI-mode toggle (simple / advanced). Persisted to localStorage.
     (function () {

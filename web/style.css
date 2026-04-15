@@ -332,6 +332,21 @@ main {
   font-size: 0.75rem;
 }
 
+/* Inline model panel embedded inside each driver card */
+.driver-model-panel {
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+.driver-model-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+}
+.driver-model-title { color: var(--text); }
+.driver-model-meta  { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
 .driver-soc-bar {
   width: 100%;
   height: 6px;

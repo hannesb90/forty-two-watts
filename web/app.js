@@ -886,7 +886,11 @@
         '  <span class="stat-label">Ticks</span><span class="stat-value">' + ticks + "</span>" +
         '  <span class="stat-label">Errors</span><span class="stat-value">' + errors + "</span>" +
         "</div>" +
-        '<div class="driver-soc-bar"><div class="driver-soc-fill" style="width:' + Math.round(batSocVal * 100) + '%"></div></div>';
+        '<div class="driver-soc-bar"><div class="driver-soc-fill" style="width:' + Math.round(batSocVal * 100) + '%"></div></div>' +
+        // Inline battery model — rendered from models.js's cached payload.
+        // Drawing it here in the same pass as the driver card avoids the
+        // earlier race where two independent polls fought over the slot.
+        (window.renderInlineBatteryModel ? window.renderInlineBatteryModel(name) : "");
 
       driversGrid.appendChild(card);
     });

@@ -25,6 +25,7 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/configreload"
 	"github.com/frahlg/forty-two-watts/go/internal/control"
 	"github.com/frahlg/forty-two-watts/go/internal/currency"
+	"github.com/frahlg/forty-two-watts/go/internal/arp"
 	"github.com/frahlg/forty-two-watts/go/internal/drivers"
 	"github.com/frahlg/forty-two-watts/go/internal/forecast"
 	"github.com/frahlg/forty-two-watts/go/internal/ha"
@@ -134,6 +135,7 @@ func main() {
 	reg.ModbusFactory = func(name string, c *config.ModbusConfig) (drivers.ModbusCap, error) {
 		return modbuscli.Dial(c.Host, c.Port, c.UnitID)
 	}
+	reg.ARPLookup = arp.Lookup
 	// Spawn initial drivers
 	for _, d := range cfg.Drivers {
 		// Resolve relative WASM paths against config dir
@@ -145,6 +147,22 @@ func main() {
 		}
 	}
 	defer reg.ShutdownAll()
+
+	// ---- Identity bootstrap ----
+	// Drivers report make/serial inside driver_init via host.set_make / set_sn,
+	// and we resolved endpoint+MAC at registry-Add time. Now we wait briefly
+	// for those to populate, then register each device + run the one-shot
+	// migration that re-keys legacy battery_models from driver-name to
+	// device_id. Subsequent runs are no-ops.
+	go func() {
+		time.Sleep(3 * time.Second) // let driver_init finish + first SN be reported
+		registerAllDevices(st, reg)
+		if migrated, err := st.MigrateBatteryModelKeys(); err != nil {
+			slog.Warn("battery model key migration failed", "err", err)
+		} else if migrated > 0 {
+			slog.Info("battery model keys migrated to device_id", "count", migrated)
+		}
+	}()
 
 	// ---- Shared mutexes for API/control/models ----
 	ctrlMu := &sync.Mutex{}
@@ -579,6 +597,28 @@ func doRolloff(ctx context.Context, st *state.Store, coldDir string) {
 	}
 	if rows > 0 {
 		slog.Info("parquet rolloff", "rows", rows, "files", len(files))
+	}
+}
+
+// registerAllDevices snapshots the identity HostEnv has gathered for each
+// running driver and upserts a row in the devices table. Idempotent.
+// Called periodically because some drivers (notably MQTT) only learn their
+// serial after the first message from the device.
+func registerAllDevices(st *state.Store, reg *drivers.Registry) {
+	for _, name := range reg.Names() {
+		env := reg.Env(name)
+		if env == nil { continue }
+		make, sn, mac, ep := env.FullIdentity()
+		dev := state.Device{
+			DriverName: name,
+			Make:       make,
+			Serial:     sn,
+			MAC:        mac,
+			Endpoint:   ep,
+		}
+		if id, err := st.RegisterDevice(dev); err == nil && id != "" {
+			slog.Debug("device registered", "name", name, "device_id", id, "make", make, "sn", sn, "mac", mac)
+		}
 	}
 }
 
