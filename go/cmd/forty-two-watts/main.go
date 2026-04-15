@@ -63,7 +63,11 @@ func main() {
 
 	// ---- Open persistent state (SQLite) ----
 	statePath := "state.db"
-	if cfg.State != nil && cfg.State.Path != "" { statePath = cfg.State.Path }
+	coldDir := "cold"
+	if cfg.State != nil {
+		if cfg.State.Path != "" { statePath = cfg.State.Path }
+		if cfg.State.ColdDir != "" { coldDir = cfg.State.ColdDir }
+	}
 	st, err := state.Open(statePath)
 	if err != nil {
 		slog.Error("open state", "err", err)
@@ -408,6 +412,9 @@ func main() {
 		}
 	}
 
+	// ---- Background: Parquet rolloff (>14d → cold dir) ----
+	go rolloffLoop(ctx, st, coldDir)
+
 	// ---- Control loop ----
 	controlInterval := time.Duration(cfg.Site.ControlIntervalS) * time.Second
 	fuseMaxW := cfg.Fuse.MaxPowerW()
@@ -522,6 +529,17 @@ func main() {
 			// ---- Record history snapshot ----
 			recordHistory(st, tel, ctrl, nowMs)
 
+			// ---- Flush per-driver metrics into long-format TS DB ----
+			if samples := tel.FlushSamples(); len(samples) > 0 {
+				stSamples := make([]state.Sample, len(samples))
+				for i, sm := range samples {
+					stSamples[i] = state.Sample{Driver: sm.Driver, Metric: sm.Metric, TsMs: sm.TsMs, Value: sm.Value}
+				}
+				if err := st.RecordSamples(stSamples); err != nil {
+					slog.Warn("ts samples flush failed", "n", len(samples), "err", err)
+				}
+			}
+
 			// ---- Periodic battery-model persistence (every 12 cycles ≈ 60s) ----
 			saveCount++
 			if saveCount%12 == 0 {
@@ -534,6 +552,33 @@ func main() {
 				modelsMu.Unlock()
 			}
 		}
+	}
+}
+
+// rolloffLoop runs the SQLite → Parquet roll-off once per hour. Cheap when
+// nothing is due (a single SELECT returns 0 rows); only does real work once
+// data crosses the 14-day boundary into cold storage.
+func rolloffLoop(ctx context.Context, st *state.Store, coldDir string) {
+	tick := time.NewTicker(1 * time.Hour)
+	defer tick.Stop()
+	// Run once at startup so a fresh boot catches any backlog.
+	doRolloff(ctx, st, coldDir)
+	for {
+		select {
+		case <-ctx.Done(): return
+		case <-tick.C: doRolloff(ctx, st, coldDir)
+		}
+	}
+}
+
+func doRolloff(ctx context.Context, st *state.Store, coldDir string) {
+	rows, files, err := st.RolloffToParquet(ctx, coldDir)
+	if err != nil {
+		slog.Warn("parquet rolloff failed", "err", err)
+		return
+	}
+	if rows > 0 {
+		slog.Info("parquet rolloff", "rows", rows, "files", len(files))
 	}
 }
 
@@ -638,7 +683,7 @@ func recordHistory(st *state.Store, tel *telemetry.Store, ctrl *control.State, n
 	if r := tel.Get(ctrl.SiteMeterDriver, telemetry.DerMeter); r != nil {
 		gridW = r.SmoothedW
 	}
-	var pvW, batW, sumSoC, totalCap float64
+	var pvW, batW, sumSoC float64
 	var socCount int
 	for _, r := range tel.ReadingsByType(telemetry.DerPV) { pvW += r.SmoothedW }
 	for _, r := range tel.ReadingsByType(telemetry.DerBattery) {
@@ -647,14 +692,41 @@ func recordHistory(st *state.Store, tel *telemetry.Store, ctrl *control.State, n
 			sumSoC += *r.SoC
 			socCount++
 		}
-		_ = totalCap
 	}
 	avgSoC := 0.0
 	if socCount > 0 { avgSoC = sumSoC / float64(socCount) }
 	loadW := gridW - batW - pvW
 	if loadW < 0 { loadW = 0 }
+
+	// Per-driver detail packed into the JSON column. The schema is
+	// schema-less by design — UI code reads what it understands and
+	// ignores the rest, so drivers can add fields without a migration.
+	perDriver := make(map[string]map[string]float64)
+	for name, h := range tel.AllHealth() {
+		row := map[string]float64{}
+		if r := tel.Get(name, telemetry.DerBattery); r != nil {
+			row["bat_w"] = r.SmoothedW
+			if r.SoC != nil { row["soc"] = *r.SoC }
+		}
+		if r := tel.Get(name, telemetry.DerPV); r != nil {
+			row["pv_w"] = r.SmoothedW
+		}
+		if r := tel.Get(name, telemetry.DerMeter); r != nil {
+			row["meter_w"] = r.SmoothedW
+		}
+		_ = h
+		perDriver[name] = row
+	}
+	targets := make(map[string]float64)
+	for _, t := range ctrl.LastTargets {
+		targets[t.Driver] = t.TargetW
+	}
+	jsonBlob, _ := json.Marshal(map[string]any{
+		"drivers": perDriver,
+		"targets": targets,
+	})
 	_ = st.RecordHistory(state.HistoryPoint{
 		TsMs: nowMs, GridW: gridW, PVW: pvW, BatW: batW, LoadW: loadW, BatSoC: avgSoC,
-		JSON: "{}",
+		JSON: string(jsonBlob),
 	})
 }

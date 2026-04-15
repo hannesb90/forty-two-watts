@@ -146,8 +146,13 @@ type HomeAssistant struct {
 }
 
 // StateConf is the persistent state DB config.
+//
+// Path is the SQLite file (default "state.db"). ColdDir is the directory
+// where >14d-old time-series data is rolled off as Parquet, partitioned
+// YYYY/MM/DD.parquet (default "cold/" alongside Path).
 type StateConf struct {
-	Path string `yaml:"path" json:"path"`
+	Path    string `yaml:"path" json:"path"`
+	ColdDir string `yaml:"cold_dir" json:"cold_dir"`
 }
 
 // Price is the spot-price source config.

@@ -128,6 +128,29 @@ func (s *Store) migrate() error {
 			source TEXT NOT NULL,
 			fetched_at_ms INTEGER NOT NULL
 		)`,
+
+		// ---- Long-format time-series ("recent" tier, last 14 days) ----
+		// Drivers + metrics are interned to integer ids to keep rows small.
+		// Composite PK is (driver_id, metric_id, ts) WITHOUT ROWID so storage
+		// is clustered by driver+metric — typical access pattern is "give me
+		// metric X for driver Y over time range Z".
+		`CREATE TABLE IF NOT EXISTS ts_drivers (
+			id INTEGER PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE
+		)`,
+		`CREATE TABLE IF NOT EXISTS ts_metrics (
+			id INTEGER PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE,
+			unit TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS ts_samples (
+			driver_id INTEGER NOT NULL,
+			metric_id INTEGER NOT NULL,
+			ts_ms     INTEGER NOT NULL,
+			value     REAL NOT NULL,
+			PRIMARY KEY (driver_id, metric_id, ts_ms)
+		) WITHOUT ROWID, STRICT`,
+		`CREATE INDEX IF NOT EXISTS idx_ts_samples_ts ON ts_samples(ts_ms)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {

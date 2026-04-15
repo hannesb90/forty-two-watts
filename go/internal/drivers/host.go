@@ -132,6 +132,14 @@ func (h *HostEnv) emitTelemetry(rawJSON []byte) error {
 	return nil
 }
 
+// emitMetric buffers a scalar diagnostic metric for the long-format TS DB.
+// Driver authors call this for anything beyond the standard pv/battery/meter
+// shape — temperatures, voltages, frequencies, MPPT currents, etc.
+func (h *HostEnv) emitMetric(name string, value float64) {
+	if h.Telemetry == nil { return }
+	h.Telemetry.EmitMetric(h.DriverName, name, value)
+}
+
 // setSN records the device serial number.
 func (h *HostEnv) setSN(sn string) {
 	h.mu.Lock(); h.SN = sn; h.mu.Unlock()

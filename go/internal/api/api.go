@@ -120,6 +120,8 @@ func (s *Server) routes() {
 	s.handle("POST /api/pvmodel/reset",       s.handlePVModelReset)
 	s.handle("GET  /api/loadmodel",           s.handleLoadModel)
 	s.handle("POST /api/loadmodel/reset",     s.handleLoadModelReset)
+	s.handle("GET  /api/series",              s.handleSeries)
+	s.handle("GET  /api/series/catalog",      s.handleSeriesCatalog)
 
 	// ---- Static web UI ----
 	// Everything not matched above falls through to the static server.
@@ -711,6 +713,60 @@ func (s *Server) handleMPCReplan(w http.ResponseWriter, r *http.Request) {
 	}
 	plan := s.deps.MPC.Replan(r.Context())
 	writeJSON(w, 200, map[string]any{"enabled": true, "plan": plan})
+}
+
+// ---- Long-format time-series ----
+
+// handleSeries: GET /api/series?driver=ferroamp&metric=battery_w&range=1h&points=600
+// Returns one metric's time series for one driver. Useful for the metric
+// browser UI and for ML training data exports.
+func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
+	driver := r.URL.Query().Get("driver")
+	metric := r.URL.Query().Get("metric")
+	if driver == "" || metric == "" {
+		writeJSON(w, 400, map[string]string{"error": "driver and metric are required"})
+		return
+	}
+	rng := r.URL.Query().Get("range")
+	if rng == "" { rng = "1h" }
+	points := 0
+	if p := r.URL.Query().Get("points"); p != "" {
+		if v, err := strconv.Atoi(p); err == nil { points = v }
+	}
+	windowMs := parseRange(rng)
+	now := time.Now().UnixMilli()
+	rows, err := s.deps.State.LoadSeries(driver, metric, now-windowMs, now, points)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	out := make([]map[string]any, len(rows))
+	for i, sm := range rows {
+		out[i] = map[string]any{"ts": sm.TsMs, "v": sm.Value}
+	}
+	writeJSON(w, 200, map[string]any{
+		"driver": driver, "metric": metric, "range": rng, "points": out,
+	})
+}
+
+// handleSeriesCatalog: GET /api/series/catalog
+// Lists the (driver, metric) tuples that have any samples recorded. UIs
+// use this to enumerate available signals for charting / debugging.
+func (s *Server) handleSeriesCatalog(w http.ResponseWriter, r *http.Request) {
+	drivers, err := s.deps.State.DriverNames()
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	metrics, err := s.deps.State.MetricNames()
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"drivers": drivers,
+		"metrics": metrics,
+	})
 }
 
 // ---- PV digital twin ----

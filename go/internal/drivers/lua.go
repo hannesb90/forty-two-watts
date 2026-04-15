@@ -202,6 +202,19 @@ func registerHost(L *lua.LState, env *HostEnv) {
 		return 0
 	}))
 
+	// host.emit_metric("battery_temp_c", 23.5) — record an arbitrary
+	// scalar diagnostic into the long-format TS DB. Use for anything that
+	// doesn't fit the structured pv/battery/meter shape: temperatures, DC
+	// voltages, MPPT currents, grid frequency, inverter heat-sink, etc.
+	// The metric name is the column name in the time-series — pick a stable
+	// snake_case identifier with the unit as a suffix.
+	host.RawSetString("emit_metric", L.NewFunction(func(L *lua.LState) int {
+		name := L.CheckString(1)
+		val := float64(L.CheckNumber(2))
+		env.emitMetric(name, val)
+		return 0
+	}))
+
 	host.RawSetString("millis", L.NewFunction(func(L *lua.LState) int {
 		L.Push(lua.LNumber(env.millis()))
 		return 1

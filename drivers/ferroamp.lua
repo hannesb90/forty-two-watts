@@ -176,6 +176,17 @@ function driver_poll()
         end
 
         host.emit("meter", meter)
+        -- Diagnostics: long-format TS DB
+        if meter.l1_w then host.emit_metric("meter_l1_w", meter.l1_w) end
+        if meter.l2_w then host.emit_metric("meter_l2_w", meter.l2_w) end
+        if meter.l3_w then host.emit_metric("meter_l3_w", meter.l3_w) end
+        if meter.l1_v then host.emit_metric("meter_l1_v", meter.l1_v) end
+        if meter.l2_v then host.emit_metric("meter_l2_v", meter.l2_v) end
+        if meter.l3_v then host.emit_metric("meter_l3_v", meter.l3_v) end
+        if meter.l1_a then host.emit_metric("meter_l1_a", meter.l1_a) end
+        if meter.l2_a then host.emit_metric("meter_l2_a", meter.l2_a) end
+        if meter.l3_a then host.emit_metric("meter_l3_a", meter.l3_a) end
+        if meter.hz   then host.emit_metric("grid_hz",    meter.hz)   end
     end
 
     --------------------------------------------------------------------------
@@ -224,6 +235,8 @@ function driver_poll()
             end
 
             host.emit("battery", battery)
+            if battery.v then host.emit_metric("battery_dc_v", battery.v) end
+            if battery.a then host.emit_metric("battery_dc_a", battery.a) end
         end
     end
 

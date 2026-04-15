@@ -114,6 +114,15 @@ func (h *DriverHealth) IsOnline() bool {
 	return h.Status != StatusOffline
 }
 
+// MetricSample is one (driver, metric, ts, value) tuple buffered for the
+// long-format TS database. State.Store consumes these via FlushSamples.
+type MetricSample struct {
+	Driver string
+	Metric string
+	TsMs   int64
+	Value  float64
+}
+
 // Store is the central telemetry sink that drivers emit into and that the
 // control loop reads from. Thread-safe.
 type Store struct {
@@ -127,6 +136,12 @@ type Store struct {
 
 	// Separate slow filter for computed load (see UpdateLoad below).
 	loadFilter *KalmanFilter1D
+
+	// Per-cycle metric buffer. Drivers push via EmitMetric, the control loop
+	// drains via FlushSamples once per tick. Decouples the hot path from
+	// the (potentially blocking) DB writer.
+	pendingMu sync.Mutex
+	pending   []MetricSample
 }
 
 // NewStore creates an empty telemetry store with default Kalman params.
@@ -167,6 +182,7 @@ func (s *Store) Update(driver string, t DerType, rawW float64, soc *float64, dat
 			soc = prev.SoC
 		}
 	}
+	now := time.Now()
 	s.readings[k] = &DerReading{
 		Driver:    driver,
 		DerType:   t,
@@ -174,8 +190,45 @@ func (s *Store) Update(driver string, t DerType, rawW float64, soc *float64, dat
 		SmoothedW: smoothed,
 		SoC:       soc,
 		Data:      data,
-		UpdatedAt: time.Now(),
+		UpdatedAt: now,
 	}
+
+	// Auto-buffer the standard fields (raw, not smoothed — we store ground
+	// truth and let consumers smooth as they like).
+	tsMs := now.UnixMilli()
+	s.pendingMu.Lock()
+	s.pending = append(s.pending,
+		MetricSample{Driver: driver, Metric: t.String() + "_w", TsMs: tsMs, Value: rawW},
+	)
+	if soc != nil {
+		s.pending = append(s.pending,
+			MetricSample{Driver: driver, Metric: t.String() + "_soc", TsMs: tsMs, Value: *soc},
+		)
+	}
+	s.pendingMu.Unlock()
+}
+
+// EmitMetric buffers an arbitrary scalar metric for the long-format TS DB.
+// Use for diagnostic data drivers want to record beyond the standard
+// pv/battery/meter shape (temperatures, voltages, frequencies, etc.).
+// Drained by the control loop via FlushSamples.
+func (s *Store) EmitMetric(driver, name string, value float64) {
+	s.pendingMu.Lock()
+	s.pending = append(s.pending, MetricSample{
+		Driver: driver, Metric: name, TsMs: time.Now().UnixMilli(), Value: value,
+	})
+	s.pendingMu.Unlock()
+}
+
+// FlushSamples returns + clears all buffered metric samples. The control
+// loop calls this once per cycle and forwards to the persistent store.
+func (s *Store) FlushSamples() []MetricSample {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	if len(s.pending) == 0 { return nil }
+	out := s.pending
+	s.pending = nil
+	return out
 }
 
 // Get returns the latest reading for a driver+type, or nil if absent.

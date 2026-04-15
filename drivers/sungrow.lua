@@ -184,6 +184,13 @@ function driver_poll()
         rated_w     = rated_w,
         temp_c      = heatsink_c,
     })
+    -- Diagnostics: long-format TS DB
+    host.emit_metric("pv_mppt1_v",       mppt1_v)
+    host.emit_metric("pv_mppt1_a",       mppt1_a)
+    host.emit_metric("pv_mppt2_v",       mppt2_v)
+    host.emit_metric("pv_mppt2_a",       mppt2_a)
+    host.emit_metric("inverter_temp_c",  heatsink_c)
+    host.emit_metric("grid_hz",          hz)
 
     -- Battery: 13019-13022 (voltage, current, power, SoC)
     local ok_bat, bat_regs = pcall(host.modbus_read, 13019, 4, "input")
@@ -223,6 +230,8 @@ function driver_poll()
         charge_wh    = bat_charge_wh,
         discharge_wh = bat_discharge_wh,
     })
+    host.emit_metric("battery_dc_v", bat_v)
+    host.emit_metric("battery_dc_a", bat_a)
 
     -- Grid meter power: 5600-5601, I32 LE, watts (positive=import, negative=export)
     local ok_mw, mw_regs = pcall(host.modbus_read, 5600, 2, "input")
@@ -287,6 +296,15 @@ function driver_poll()
         import_wh = import_wh,
         export_wh = export_wh,
     })
+    host.emit_metric("meter_l1_w", l1_w)
+    host.emit_metric("meter_l2_w", l2_w)
+    host.emit_metric("meter_l3_w", l3_w)
+    host.emit_metric("meter_l1_v", l1_v)
+    host.emit_metric("meter_l2_v", l2_v)
+    host.emit_metric("meter_l3_v", l3_v)
+    host.emit_metric("meter_l1_a", l1_a)
+    host.emit_metric("meter_l2_a", l2_a)
+    host.emit_metric("meter_l3_a", l3_a)
 
     return 5000
 end
