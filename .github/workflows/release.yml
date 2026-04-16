@@ -5,10 +5,8 @@ name: release
 # emergency re-runs (no-op if the analyzer doesn't find releasable
 # commits since the last tag).
 on:
-  # Disabled automatic releases — version bumps are manual (git tag).
-  # Re-enable push trigger when ready for automated semver.
-  # push:
-  #   branches: [master]
+  push:
+    branches: [master]
   workflow_dispatch:
 
 # semantic-release needs to push a tag + the changelog commit.
