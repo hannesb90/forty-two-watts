@@ -125,6 +125,31 @@ main {
   margin-top: 0.25rem;
 }
 
+/* ---- Status bar (bottom) ---- */
+.status-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 4px 16px;
+  background: var(--bg-card, #1e1e2e);
+  border-top: 1px solid rgba(255,255,255,0.06);
+  font-size: 0.72rem;
+  color: var(--text-dim, #94a3b8);
+  z-index: 50;
+  font-family: monospace;
+}
+.status-bar-item { white-space: nowrap; }
+.sb-ok { color: #22c55e; }
+.sb-warn { color: #f59e0b; }
+.sb-err { color: #ef4444; }
+
+/* Make room so content doesn't hide behind the fixed bar */
+body { padding-bottom: 28px; }
+
 .header-logo {
   height: 36px;
   width: auto;

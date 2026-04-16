@@ -343,6 +343,23 @@
       }
     }
 
+    // Status bar — driver health summary
+    var sbDrivers = document.getElementById("sb-drivers");
+    var sbVersion = document.getElementById("sb-version");
+    if (sbDrivers && data.drivers) {
+      var names = Object.keys(data.drivers);
+      var parts = names.map(function (n) {
+        var d = data.drivers[n];
+        var dot = d.status === "ok" ? "\u25cf" : d.status === "degraded" ? "\u25cb" : "\u2715";
+        var cls = d.status === "ok" ? "sb-ok" : d.status === "degraded" ? "sb-warn" : "sb-err";
+        return '<span class="' + cls + '">' + dot + " " + n + "</span>";
+      });
+      sbDrivers.innerHTML = parts.join("  ");
+    }
+    if (sbVersion && data.version) {
+      sbVersion.textContent = data.version;
+    }
+
     // Dispatch targets — keyed by driver name so the driver card can show
     // its commanded target inline alongside the actual battery power.
     var dispatchByDriver = {};
