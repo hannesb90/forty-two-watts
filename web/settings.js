@@ -270,6 +270,22 @@
               '<input type="number" data-path="drivers.' + idx + '.capabilities.modbus.unit_id" value="' + (modbus.unit_id || 1) + '">' +
               '</fieldset>';
           }
+          // Cloud API drivers (e.g. Easee) — show auth fields inline
+          var isCloudDriver = (driverFile || '').indexOf('easee_cloud') >= 0 || (cap.http != null);
+          if (isCloudDriver) {
+            var cfg = d.config || {};
+            html += '<fieldset><legend>Cloud credentials</legend>' +
+              '<div class="field-row"><div>' +
+              '<label>Email / phone ' + help('Account email or phone number (with country code, e.g. +46...) for the cloud service.') + '</label>' +
+              '<input type="text" data-path="drivers.' + idx + '.config.email" value="' + escHtml(cfg.email || '') + '">' +
+              '</div><div>' +
+              '<label>Password</label>' +
+              '<input type="password" data-path="drivers.' + idx + '.config.password" value="' + escHtml(cfg.password || '') + '">' +
+              '</div></div>' +
+              '<label>Device serial ' + help('Serial number of the charger. Leave empty to auto-detect.') + '</label>' +
+              '<input type="text" data-path="drivers.' + idx + '.config.serial" value="' + escHtml(cfg.serial || '') + '">' +
+              '</fieldset>';
+          }
           html += '</div>';
         });
         html += '</div>' +
