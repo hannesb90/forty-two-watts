@@ -155,14 +155,9 @@
           <button id="peak-limit-send" class="btn-send">Set</button>
         </div>
       </div>
-      <div class="card control-card advanced-only">
-        <div class="card-label">EV charging ⚡</div>
-        <div class="slider-group-compact">
-          <input type="range" id="ev-slider" min="0" max="22000" step="100" value="0">
-          <span id="ev-value" class="slider-current">0 W</span>
-          <button id="ev-send" class="btn-send">Set</button>
-        </div>
-      </div>
+      <!-- EV charging slider removed — ev_charging_w is now set
+           automatically by the Easee Cloud driver (or any DerEV driver).
+           The manual /api/ev_charging endpoint stays as a debug override. -->
     </section>
 
     <!-- Live power + plan side-by-side -->
