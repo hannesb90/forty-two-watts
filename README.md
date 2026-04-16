@@ -1,306 +1,138 @@
-# forty-two-watts 🐬
+# forty-two-watts
 
-> *"The Answer to the Ultimate Question of Life, the Universe, and Grid Balancing is... 42 watts."*
+<img src="web/logo.jpg" alt="42W" width="120" align="right">
 
-Unified Home Energy Management System. Coordinates multiple batteries + PV +
-grid + loads on a shared grid connection so they don't oscillate or blow the
-main fuse.
+> Home energy management that actually works. Coordinates solar, batteries, grid, and EV chargers so your house runs on its own power.
 
-Three layers in one binary:
+**Status: v0.4.0-alpha** — running in production on real hardware, but the API and config format may still change. [Join the Discord](https://discord.gg/z7FxpQnk) to follow development and share feedback.
 
-1. **Inner control loop** (5 s) — PI + cascade + fuse + SoC clamps,
-   executes grid-power targets no matter where they come from.
-2. **MPC planner** (15 min) — dynamic programming over a discretized
-   SoC grid, 48-hour horizon, three strategies (self-consumption /
-   cheap charging / arbitrage), confidence-weighted when prices are
-   ML-forecasted.
-3. **Digital twins** (1 min) — online RLS / bucket models that learn
-   the system's PV curve, household load profile, and spot-price
-   pattern from its own telemetry. Feed slot-by-slot forecasts into
-   the MPC.
+## What it does
 
-The Go port is now **mainline on `master`**. The previous Rust
-implementation lives alongside in `src/` + `Cargo.toml` and is frozen
-(see `MIGRATION_PLAN.md` for historical context).
+42W is a single Go binary that runs on a Raspberry Pi (or any Linux box) and manages your home energy system in real time:
 
-## What's new in v2.1+
-
-- **Lua drivers are now the primary path.** Drop a `.lua` file in
-  `drivers/`, no build step. WASM drivers still load via the same
-  registry and capability ABI, but Lua is recommended for anything new.
-  See [`docs/architecture.md`](docs/architecture.md) for the current
-  driver host and [`docs/writing-a-driver.md`](docs/writing-a-driver.md)
-  for the walkthrough.
-- **Long-format TSDB.** `ts_drivers` / `ts_metrics` / `ts_samples`
-  (WITHOUT ROWID, STRICT) in SQLite, with automatic daily Parquet
-  rolloff past 14 days. Drivers push arbitrary scalar diagnostics with
-  `host.emit_metric(name, value)`. Details in
-  [`docs/tsdb.md`](docs/tsdb.md).
-- **Hardware-stable device identity.** Every device gets a `device_id`
-  resolved as `make:serial` > `mac:<arp-resolved>` > `ep:<endpoint>`.
-  Battery models and other persistent state are keyed on `device_id`,
-  so renaming a driver no longer orphans training data. See
-  [`docs/device-identity.md`](docs/device-identity.md).
-- **`sunpos` package.** Physics-only solar position (Spencer 1971),
-  used as a prior for the data-driven PV twin and as groundwork for
-  upcoming auto-PV.
-- **Watchdog safety.** `tel.WatchdogScan` flips stale drivers offline
-  and reverts them to autonomous mode; a stale site-meter
-  short-circuits the dispatch cycle.
-
-Start with [`docs/architecture.md`](docs/architecture.md) for the
-top-of-funnel overview.
-
----
+- **Self-consumption** — batteries discharge to cover household load, charge from PV surplus, grid stays near zero.
+- **Smart scheduling** — an MPC planner looks 48 hours ahead using electricity prices + weather forecasts and decides when to charge, discharge, or hold.
+- **EV-aware** — when your car is charging, home batteries automatically stop discharging into it (no energy round-tripping through two battery systems).
+- **Multi-device** — runs multiple inverters + batteries + meters simultaneously, each with its own Lua driver. Tested with Ferroamp + Sungrow on the same site.
 
 ## Supported devices
 
-19 Lua drivers covering 16 manufacturers — Ferroamp, Sungrow, Solis,
-Huawei, Deye, SMA, Fronius, SolarEdge, Eastron SDM, Pixii, Kostal,
-GoodWe, Growatt, Sofar, Victron, Easee. Seven drivers participate in
-EMS dispatch control; the rest are read-only telemetry.
+19 Lua drivers ship today. Each is a single `.lua` file — no compilation, no toolchain, hot-reloadable on the device.
 
-See [`docs/driver-catalog.md`](docs/driver-catalog.md) for the full
-table (protocols, capabilities, control, tested models) and
-[`docs/writing-a-driver.md`](docs/writing-a-driver.md) if your device
-isn't listed.
+| Category | Manufacturers |
+|----------|--------------|
+| **Hybrid inverters** | Sungrow, Solis, Huawei, Deye, SMA, Fronius, SolarEdge, Kostal, GoodWe, Growatt, Sofar, Victron |
+| **Batteries** | Ferroamp (MQTT + Modbus), Pixii |
+| **Meters** | Eastron SDM630, Fronius Smart Meter |
+| **EV chargers** | Easee (Cloud API) |
 
----
-
-## Architecture in one sentence
-
-A Go binary runs the control loop, the HTTP API, and the Home Assistant
-bridge; Lua driver modules (one `.lua` file per device type, WASM still
-supported) do all protocol work — MQTT, Modbus, JSON parsing, bit
-twiddling — inside a capability-scoped sandbox with a tiny host API.
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                   forty-two-watts (Go)                          │
-│                                                                 │
-│  ┌──────────┐  ┌──────────┐   Lua drivers (gopher-lua)         │
-│  │ferroamp  │  │ sungrow  │   — fat. all protocol logic here.  │
-│  │  .lua    │  │  .lua    │   (legacy .wasm still supported    │
-│  └────┬─────┘  └────┬─────┘    via the same Registry/ABI)      │
-│       │              │                                          │
-│       ▼              ▼                                          │
-│  ┌──────────────────────────┐                                  │
-│  │    Telemetry store        │  (site sign convention —        │
-│  │    + Kalman smoothing     │   + = import to site,           │
-│  │    + driver health        │   PV − (generation),            │
-│  └──────────────┬───────────┘   bat + charge / − discharge)    │
-│                 │                                               │
-│  ┌──────────────▼────────────┐  ┌────────────────────────┐    │
-│  │  Control loop              │  │  HTTP API + web UI     │    │
-│  │  PI + cascade + self-tune  │  │  :8080                 │    │
-│  │  + ARX(1) RLS per battery  │  └────────────────────────┘    │
-│  │  + watchdog / stale-meter  │                                 │
-│  └──────────────┬────────────┘                                  │
-│                 │                 ┌────────────────────────┐    │
-│                 └────────────────▶│  HA MQTT bridge         │    │
-│                                   │  (autodiscovery)        │    │
-│                                   └────────────────────────┘    │
-│  ┌──────────────────────────┐                                  │
-│  │  SQLite state DB         │  config, events, devices,        │
-│  │  + tiered history        │  battery models (keyed on        │
-│  │  + long-format TS (14d)  │  device_id), history hot/warm/   │
-│  │  + Parquet cold (>14d)   │  cold tiers, prices, forecasts   │
-│  └──────────────────────────┘                                  │
-│                                                                 │
-│  ┌──────────────────────────┐   ┌────────────────────────┐     │
-│  │  MPC planner (15 min)    │◀──│  Digital twins (1 min) │     │
-│  │  • DP over SoC grid      │   │  • pvmodel (RLS)       │     │
-│  │  • 48 h horizon          │   │  • loadmodel (buckets) │     │
-│  │  • three strategies      │   │  • priceforecast       │     │
-│  │  • confidence blending   │   │  • sunpos prior        │     │
-│  │  • per-slot reasons      │   │    (physics-only)      │     │
-│  └────────────┬─────────────┘   └────────────────────────┘     │
-│               │  grid_target_w per slot                         │
-│               └─────▶ consumed by the control loop above        │
-└────────────────────────────────────────────────────────────────┘
-```
-
-Architecture walkthrough: [`docs/architecture.md`](docs/architecture.md)
-Sign convention (critical): [`docs/site-convention.md`](docs/site-convention.md)
-Historical migration rationale: [`MIGRATION_PLAN.md`](MIGRATION_PLAN.md)
+Adding a new device? See [Writing a driver](docs/writing-a-driver.md) or the [Claude Code recipe](docs/writing-a-driver-with-claude-code.md) to generate one from a register map.
 
 ## Quick start
 
-Prereqs: Go 1.22+, `make`. That's it — the default Lua drivers need
-no additional toolchain.
+**Prerequisites:** Go 1.25+, a Raspberry Pi (or any `linux/arm64` machine), and at least one supported inverter/battery on your LAN.
 
 ```bash
-# Build Go binaries + (if present) WASM drivers, run the full local stack with simulators
-make dev
+git clone https://github.com/frahlg/forty-two-watts
+cd forty-two-watts
 
-# Open the UI
+# Try it locally with simulators
+make dev          # starts sim-ferroamp + sim-sungrow + the app
 open http://localhost:8080
+
+# Build for your Pi
+make build-arm64
+scp bin/forty-two-watts-linux-arm64 pi@<your-pi>:~/42w/
+scp -r drivers/ web/ config.example.yaml pi@<your-pi>:~/42w/
 ```
 
-That's it — no real hardware, no external MQTT broker needed. Two
-simulators stand in for a Ferroamp EnergyHub (MQTT) and a Sungrow
-SH10RT (Modbus TCP) with realistic first-order battery response.
+Copy `config.example.yaml` to `config.yaml` and fill in your device IPs. The web UI at `:8080` lets you configure everything else.
 
-## Driver development
+## How it works
 
-Writing a new driver is the usual way to add device support. Drop a
-`.lua` file in `drivers/`, wire it into `config.yaml`, restart. No
-build step.
+Three layers in one binary:
 
-- [`docs/writing-a-driver.md`](docs/writing-a-driver.md) — canonical
-  walkthrough: DRIVER table, lifecycle functions, host API reference,
-  sign convention, pitfalls.
-- [`docs/writing-a-driver-with-claude-code.md`](docs/writing-a-driver-with-claude-code.md)
-  — hands-on recipe for using Claude Code to bootstrap a driver from
-  a vendor register map: prompts, porting checklist, common mistakes,
-  iteration loop.
-- [`docs/testing-drivers-live.md`](docs/testing-drivers-live.md) —
-  runbook for iterating against the bundled simulators and against
-  real hardware on a Raspberry Pi, with verified `curl` + `make`
-  commands for every common loop.
-- `drivers/sungrow.lua` — full Modbus TCP reference implementation.
-- `drivers/ferroamp.lua` — full MQTT reference implementation.
+1. **Control loop** (every 5 s) — PI controller + slew rate + fuse guard + SoC clamps. Reads the site meter, computes battery targets, dispatches to drivers. This is the part that keeps the lights on.
 
-## Features
+2. **MPC planner** (every 15 min) — dynamic programming over a discretized SoC grid. Three strategies:
+   - **Self-consumption** — never import to charge, never export from battery. Just cover your own load.
+   - **Cheap charging** — charge from grid when prices are low, otherwise self-consume.
+   - **Arbitrage** — full price optimization: charge cheap, discharge expensive, export when profitable.
 
-- **PI controller** with anti-windup, 6 dispatch modes (idle,
-  self_consumption, peak_shaving, charge, priority, weighted)
-- **Cascade control** — per-battery inner PI tuned from the learned
-  τ, plus inverse-gain compensation so commands actually land
-- **Online learning** — ARX(1) model per battery via RLS with forgetting
-  factor, capability-aware saturation curves, hardware-health drift
-- **Self-tune** — 3-minute step-response calibration per battery to set
-  a clean baseline; safety-gated by confidence
-- **Lua drivers** — FAT drivers. The host provides only capabilities
-  (MQTT, Modbus, time, logging, TS metric emit). Each driver does its
-  own protocol parsing, state management, command translation. WASM
-  drivers still load through the same Registry for anyone shipping a
-  `.wasm` binary from v2.0.
-- **Hardware-stable device identity** — `make:serial` >
-  `mac:<arp-resolved>` > `ep:<endpoint>`. Persistent state (battery
-  models, calibration history) survives driver renames.
-- **Watchdog** — stale drivers flip offline and revert to autonomous
-  mode; stale site-meter short-circuits the dispatch cycle.
-- **Hot-reload** — `config.yaml` + settings UI round-trip, file watcher
-  applies changes live for 99% of settings
-- **Long-format TSDB** — `host.emit_metric(name, value)` lands
-  diagnostics in an interned SQLite schema (`ts_samples`,
-  WITHOUT ROWID, STRICT). Past 14 days rolls off to daily Parquet
-  files for long-term retention.
-- **Tiered history** — 30d at 5s, 12mo at 15min buckets, forever at 1d
-  buckets. Pure SQL aggregation (SQLite, no CGo).
-- **Home Assistant MQTT** — autodiscovery publishes sensors for grid,
-  PV, battery, load, SoC, per-driver + mode/target/peak/EV commands
+3. **Digital twins** (every 60 s) — online machine learning models that observe your system and learn:
+   - **PV twin** — learns your roof's orientation, shading, and soiling from clear-sky physics + cloud cover.
+   - **Load twin** — learns your household's hourly consumption pattern + heating coefficient.
+   - **Price twin** — fills in electricity prices beyond the day-ahead publication window.
 
-## Deploy to a Raspberry Pi
+## Web UI
+
+The dashboard shows real-time power flow, battery SoC, energy totals, the planner's 48-hour schedule, and per-driver health. Everything is configurable from Settings — devices, strategies, EV charger credentials, Home Assistant integration.
+
+## Home Assistant
+
+Built-in MQTT autodiscovery. Enable it in Settings → Home Assistant, point it at your Mosquitto broker, and sensors + controls appear in HA automatically.
+
+## EV charging
+
+Configure your Easee charger in Settings → EV Charger (email + password). The driver polls the Easee Cloud API every 5 seconds. When the car charges, the dispatch clamp prevents home batteries from discharging into the car.
+
+OCPP 1.6J Central System is also built in (port 8887) for chargers that support direct WebSocket connections.
+
+## Architecture
+
+```
+config.yaml
+    ↓
+┌─────────────────────────────────────────┐
+│  Lua drivers (one goroutine per device) │
+│  ferroamp.lua · sungrow.lua · easee.lua │
+└────────────┬────────────────────────────┘
+             ↓ host.emit("meter"|"pv"|"battery"|"ev")
+┌─────────────────────────────────────────┐
+│  Telemetry store (Kalman-smoothed)      │
+└────────────┬────────────────────────────┘
+             ↓
+┌─────────────────────────────────────────┐
+│  Control loop (PI + dispatch + clamps)  │
+│  ← MPC planner (DP, 48h horizon)       │
+│  ← Digital twins (PV, load, price)     │
+└────────────┬────────────────────────────┘
+             ↓ driver_command(action, power_w)
+┌─────────────────────────────────────────┐
+│  Lua drivers → Modbus / MQTT / HTTP     │
+└─────────────────────────────────────────┘
+```
+
+No cloud dependency for core operation. Everything runs locally on the Pi. Weather forecasts (met.no) and electricity prices (Elpriset Just Nu / ENTSO-E) are fetched periodically but the system degrades gracefully without them.
+
+## Development
 
 ```bash
-# Build the release tarballs (arm64 + amd64)
-make release
-
-# Push a release via GitHub (if you want to deploy from CI later)
-gh release create v1.0.0 release/*.tar.gz --generate-notes
-
-# Or deploy directly
-./scripts/deploy-go.sh homelab-rpi
+make test         # full Go test suite
+make e2e          # end-to-end with simulators
+make dev          # live dev with hot-reload
+make build-arm64  # cross-compile for Pi
 ```
 
-## Library choices (all pure Go)
+Driver development:
+- [Writing a Lua driver](docs/writing-a-driver.md) — full walkthrough
+- [Using Claude Code](docs/writing-a-driver-with-claude-code.md) — AI-assisted driver generation
+- [Testing drivers live](docs/testing-drivers-live.md) — sim + Pi workflow
 
-| Need | Choice | Why |
-|---|---|---|
-| Lua runtime | [gopher-lua](https://github.com/yuin/gopher-lua) | Pure Go Lua 5.1, zero CGo |
-| WASM runtime | [wazero](https://wazero.io) | Zero CGo, zero deps, prod-ready |
-| State DB | [modernc.org/sqlite](https://gitlab.com/cznic/sqlite) | Pure Go SQLite, SQL queries for history |
-| Parquet (cold tier) | [parquet-go/parquet-go](https://github.com/parquet-go/parquet-go) | Pure Go, zstd + dictionary encoding |
-| MQTT client | eclipse/paho.mqtt.golang | Battle-tested |
-| MQTT broker (tests/sim) | mochi-mqtt/server | Embeddable |
-| Modbus TCP | simonvetter/modbus | Both client and server |
-| File watcher | fsnotify/fsnotify | Cross-platform |
-| YAML | gopkg.in/yaml.v3 | Standard |
-| HTTP | stdlib `net/http` | Go 1.22+ method-scoped routing |
-| Logging | stdlib `log/slog` | Structured, inbuilt |
+## Community
 
-Nothing exotic. Nothing that requires a C toolchain. One `go build`
-produces a static binary that drops onto a Pi.
+- **Discord**: [discord.gg/z7FxpQnk](https://discord.gg/z7FxpQnk) — discuss development, share your setup, report issues
+- **Issues**: [github.com/frahlg/forty-two-watts/issues](https://github.com/frahlg/forty-two-watts/issues)
 
-## Repo layout
+## Roadmap
 
-```
-forty-two-watts/
-├── go/
-│   ├── cmd/
-│   │   ├── forty-two-watts/   # main binary
-│   │   ├── sim-ferroamp/      # embedded MQTT broker + Ferroamp fake
-│   │   └── sim-sungrow/       # Modbus TCP Sungrow fake
-│   ├── internal/
-│   │   ├── api/               # HTTP handlers
-│   │   ├── arp/               # L2 MAC resolver (linux/darwin)
-│   │   ├── battery/           # ARX(1) + RLS + cascade
-│   │   ├── config/            # YAML + validation
-│   │   ├── configreload/      # fsnotify watcher
-│   │   ├── control/           # PI + dispatch modes + fuse guard
-│   │   ├── drivers/           # Lua host + wazero host + registry
-│   │   ├── ha/                # Home Assistant MQTT bridge
-│   │   ├── loadmodel/         # household load twin
-│   │   ├── mpc/               # MPC planner (DP over SoC grid)
-│   │   ├── mqtt/              # paho wrapper
-│   │   ├── modbus/            # simonvetter wrapper
-│   │   ├── priceforecast/     # price twin (fills past day-ahead)
-│   │   ├── pvmodel/           # PV twin (RLS over sunpos/cloud)
-│   │   ├── selftune/          # step-response calibration
-│   │   ├── state/             # SQLite + tiered history + long-format TS + Parquet + devices
-│   │   ├── sunpos/            # solar position (Spencer 1971)
-│   │   └── telemetry/         # DER store + Kalman + health + watchdog
-│   └── test/e2e/              # full-stack integration test
-├── drivers/                   # Lua drivers (ferroamp.lua, sungrow.lua, …)
-├── wasm-drivers/
-│   ├── ferroamp/              # legacy Rust → wasm32-wasip1
-│   └── sungrow/               #     (~280 LOC each)
-├── drivers-wasm/              # compiled .wasm modules (gitignored)
-├── web/                       # static UI (HTML/CSS/JS)
-├── docs/                      # architecture + operator docs
-├── config.example.yaml        # sample config
-├── Makefile                   # build orchestration
-└── MIGRATION_PLAN.md          # historical Rust→Go migration rationale
-```
+- [ ] New-user onboarding flow (guided setup wizard)
+- [ ] Network scanning for auto-discovery of devices
+- [ ] Driver marketplace with version history and compatibility info
+- [ ] EV smart charging (PV-surplus preferred, departure-time aware)
+- [ ] Multi-charger load balancing with fuse coordination
+- [ ] OCPP 2.0.1 support
 
-## Testing
+## License
 
-```bash
-make test        # all unit + integration tests (Go + Rust)
-make e2e         # full-stack end-to-end test (simulates real hardware)
-```
-
-The e2e test stands up both simulators, loads the compiled drivers,
-runs the control loop, and verifies:
-- Drivers load, initialize, emit telemetry
-- Site sign convention holds (PV −, grid + for import, bat + for charge)
-- Control loop responds to grid-target changes in the correct direction
-- Mode switching persists through the state DB
-- Battery models accumulate samples through RLS
-- Per-model reset wipes them cleanly
-- Settings round-trip through the HTTP API
-
-## Documentation
-
-- [`docs/site-convention.md`](docs/site-convention.md) — THE sign convention, enforced at driver boundary
-- [`docs/battery-models.md`](docs/battery-models.md) — ARX(1), RLS, cascade, self-tune
-- [`docs/clamping.md`](docs/clamping.md) — the seven clamps and why each matters
-- [`docs/configuration.md`](docs/configuration.md) — full YAML schema reference
-- [`docs/mpc-planner.md`](docs/mpc-planner.md) — MPC strategies, confidence blending, decision reasons
-- [`docs/ml-twins.md`](docs/ml-twins.md) — PV + load + price digital twins (older, being superseded)
-- [`docs/ha-integration.md`](docs/ha-integration.md) — Home Assistant MQTT bridge
-- [`docs/host-api.md`](docs/host-api.md) — legacy WASM driver ABI
-- [`docs/lua-drivers.md`](docs/lua-drivers.md) — earlier Lua driver notes
-- [`MIGRATION_PLAN.md`](MIGRATION_PLAN.md) — historical: why Go + WASM, library evaluations
-
-These docs are being added by parallel work and will resolve once the
-sibling PRs land — the `docs/architecture.md` and `docs/writing-a-driver.md`
-links referenced at the top of this README are part of that set:
-`architecture.md`, `ml-models.md`, `tsdb.md`, `device-identity.md`,
-`safety.md`, `writing-a-driver.md`, `api.md`, `operations.md`, `testing.md`.
-
----
-
-*So long, and thanks for all the watts.* 🐬
+MIT

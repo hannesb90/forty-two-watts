@@ -1,3 +1,21 @@
+## v0.4.0-alpha (2026-04-16)
+
+First public alpha. Running in production on real hardware but API and config format may still change. See the full changelog below or the [README](README.md) for what the system can do.
+
+### Highlights
+
+- **19 Lua drivers** — Sungrow, Solis, Huawei, Deye, SMA, Fronius, SolarEdge, Kostal, GoodWe, Growatt, Sofar, Victron, Ferroamp (MQTT + Modbus), Pixii, Eastron SDM630, Fronius Smart Meter, Easee Cloud
+- **MPC planner** — 48h dynamic programming with three strategies (self-consumption, cheap charging, arbitrage)
+- **EV charging** — Easee Cloud integration + OCPP 1.6J Central System
+- **Digital twins** — self-learning PV, load, and price models
+- **Pure Go + Lua** — single static binary, no Rust, no WASM, no CGo
+- **Web dashboard** with real-time power flow, planner visualization, and full config UI
+- **Home Assistant** MQTT autodiscovery
+
+---
+
+## Auto-generated changelog (internal)
+
 ## [2.3.0](https://github.com/frahlg/forty-two-watts/compare/v2.2.6...v2.3.0) (2026-04-16)
 
 ### Features
