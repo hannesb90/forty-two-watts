@@ -203,6 +203,10 @@
               opt.dataset.protocols = protoLabel;
               opt.dataset.id = e.id || "";
               opt.dataset.httpHosts = (e.http_hosts || []).join(",");
+              // connection_defaults.host is the local-HTTP discriminator —
+              // http_hosts is declared by cloud drivers too (Easee uses it
+              // for allowed-hosts), so it can't be used on its own.
+              opt.dataset.connectionHost = (e.connection_defaults && e.connection_defaults.host) || "";
               sel.appendChild(opt);
             });
           });
@@ -221,7 +225,18 @@
             if (protocols.indexOf("http") >= 0) {
               var hosts = (chosen.dataset.httpHosts || "").split(",").filter(Boolean);
               driver.capabilities.http = { allowed_hosts: hosts };
-              driver.config = { email: "", password: "", serial: "" };
+              // connection_defaults.host is declared only by drivers that
+              // take a user-configurable local endpoint (e.g. Sourceful
+              // Zap → "zap.local"). Cloud drivers like Easee declare
+              // http_hosts for allowed-hosts but have no connection_defaults
+              // — their endpoint is hardcoded and they need email/password
+              // in config instead.
+              var connHost = chosen.dataset.connectionHost || "";
+              if (connHost) {
+                driver.config = { host: connHost };
+              } else {
+                driver.config = { email: "", password: "", serial: "" };
+              }
             }
             currentConfig.drivers.push(driver);
             renderTab("devices");
@@ -276,8 +291,26 @@
               '<input type="number" data-path="drivers.' + idx + '.capabilities.modbus.unit_id" value="' + (modbus.unit_id || 1) + '">' +
               '</fieldset>';
           }
-          // Cloud API drivers (e.g. Easee) — show auth fields inline
-          var isCloudDriver = (driverFile || '').indexOf('easee_cloud') >= 0 || (cap.http != null);
+          // Distinguish "local HTTP driver that needs an IP" (e.g. Sourceful
+          // Zap) from "cloud API driver that needs creds" (e.g. Easee) by
+          // the config shape the driver declared: config.host → local,
+          // config.email/password → cloud. Name-based matching rots the
+          // moment a new driver lands. If only an http capability is set
+          // and the config is empty, fall back to cloud so a hand-edited
+          // yaml still surfaces the auth form.
+          var dcfg = d.config || {};
+          var hasHostField = Object.prototype.hasOwnProperty.call(dcfg, 'host');
+          var hasAuthField = Object.prototype.hasOwnProperty.call(dcfg, 'email') ||
+                             Object.prototype.hasOwnProperty.call(dcfg, 'password');
+          var isLocalHTTP = cap.http != null && hasHostField;
+          var isCloudDriver = cap.http != null && !hasHostField && (hasAuthField || Object.keys(dcfg).length === 0);
+          if (isLocalHTTP) {
+            var lcfg = d.config || {};
+            html += '<fieldset><legend>HTTP</legend>' +
+              '<label>Host / IP ' + help('Hostname (e.g. zap.local) or IP address of the device. mDNS names work when your OS resolver supports them; otherwise use the LAN IP.') + '</label>' +
+              '<input type="text" data-path="drivers.' + idx + '.config.host" value="' + escHtml(lcfg.host || '') + '" placeholder="zap.local">' +
+              '</fieldset>';
+          }
           if (isCloudDriver) {
             var cfg = d.config || {};
             // Server sets has_password=true via MaskSecrets when a password

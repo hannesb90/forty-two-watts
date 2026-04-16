@@ -273,6 +273,18 @@
       driver.capabilities.mqtt = { host: ip, port: port };
     } else if (protocol === 'http') {
       driver.capabilities.http = { allowed_hosts: [ip] };
+      // connection_defaults.host is declared only by drivers that take a
+      // user-configurable local endpoint — seed config.host from the IP the
+      // user just entered. Cloud drivers (Easee etc.) declare http_hosts
+      // for allowed-hosts handling but have no connection_defaults.host;
+      // their vendor endpoint is hardcoded and they key off
+      // config.email/password instead, so leave config untouched here.
+      var connHost = (selectedCatalog && selectedCatalog.connection_defaults &&
+                      selectedCatalog.connection_defaults.host) || '';
+      if (connHost) {
+        driver.config = driver.config || {};
+        driver.config.host = ip;
+      }
     }
 
     // If this is the site meter, uncheck others
@@ -297,6 +309,8 @@
       detail = d.capabilities.modbus.host + ':' + d.capabilities.modbus.port;
     } else if (d.capabilities.mqtt) {
       detail = d.capabilities.mqtt.host + ':' + d.capabilities.mqtt.port;
+    } else if (d.capabilities.http) {
+      detail = (d.config && d.config.host) || (d.capabilities.http.allowed_hosts || [])[0] || '';
     }
     var tags = [];
     if (d.is_site_meter) tags.push('site meter');
