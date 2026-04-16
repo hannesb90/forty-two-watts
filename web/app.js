@@ -454,10 +454,11 @@
     var windowMs = CHART_RANGE_MS[chartRange] || CHART_RANGE_MS["5m"];
     var now = Date.now();
     var windowStart = now - windowMs;
-    // Forward-looking forecast is always half the past window, so past
-    // takes 2/3 of the plot width and future 1/3 — keeps the live trace
-    // dominant while still showing what the planner expects coming up.
-    var futureMs = windowMs / 2;
+    // Forward-looking forecast: at least 15 minutes so the transition
+    // from actual→predicted is smooth. For longer ranges, use half the
+    // past window. Keeps the live trace dominant on wide views while
+    // giving short views enough runway to show the spline curve.
+    var futureMs = Math.max(15 * 60 * 1000, windowMs / 2);
     var windowEnd = now + futureMs;
     var totalMs = windowEnd - windowStart;
 
@@ -638,21 +639,46 @@
       }
     });
 
-    // ---- Forward-looking forecast (dashed PV + load from the plan) ----
-    // Anchor the forecast line at the CURRENT actual measurement so
-    // there's no jump at the "now" boundary. Then linear-interpolate
-    // through each upcoming 15-min slot (plotted at slot midpoint).
-    // Gives a smooth continuous line rather than a step function.
+    // ---- Forward-looking forecast (smooth spline PV + load from the plan) ----
+    // Anchor at the actual measurement, then Catmull-Rom spline through
+    // upcoming slot midpoints. The forecast zone extends 15 min into the
+    // future on the 5m view so the transition from actual→predicted is
+    // smooth and realistic (no cliff from 400W to 0W at the boundary).
     if (chartView === "power" && chartPlan && chartPlan.actions) {
       var lastIdx = chartHistory.timestamps.length - 1;
       var lastActualPV = lastIdx >= 0 ? chartHistory.pv[lastIdx] : null;
       var lastActualLoad = lastIdx >= 0 ? chartHistory.load[lastIdx] : null;
 
+      // Catmull-Rom spline through control points (tension 0.5)
+      var drawSpline = function (pts, ctx) {
+        if (pts.length < 2) return;
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        if (pts.length === 2) {
+          ctx.lineTo(pts[1].x, pts[1].y);
+        } else {
+          for (var i = 0; i < pts.length - 1; i++) {
+            var p0 = pts[Math.max(i - 1, 0)];
+            var p1 = pts[i];
+            var p2 = pts[i + 1];
+            var p3 = pts[Math.min(i + 2, pts.length - 1)];
+            // Control points at 1/3 and 2/3
+            var cp1x = p1.x + (p2.x - p0.x) / 6;
+            var cp1y = p1.y + (p2.y - p0.y) / 6;
+            var cp2x = p2.x - (p3.x - p1.x) / 6;
+            var cp2y = p2.y - (p3.y - p1.y) / 6;
+            ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+          }
+        }
+        ctx.stroke();
+      };
+
       var drawForecast = function (field, color, lastActual) {
         var pts = [];
-        // Anchor at "now" with the latest actual — avoids a visual jump
-        // between measured and predicted.
+        // Anchor: add a phantom point 2 min BEFORE now at actual value
+        // so the spline leaves the anchor smoothly (not as a corner).
         if (lastActual != null) {
+          pts.push({ x: tsToX(now - 120000), y: valToY(lastActual) });
           pts.push({ x: tsToX(now), y: valToY(lastActual) });
         }
         for (var i = 0; i < chartPlan.actions.length; i++) {
@@ -660,21 +686,16 @@
           var aEnd = a.slot_start_ms + a.slot_len_min * 60000;
           if (aEnd < now) continue;
           if (a.slot_start_ms > windowEnd) break;
-          // Plot at slot midpoint, so each forecast value sits where it
-          // actually represents the slot's expected average.
           var midMs = (a.slot_start_ms + aEnd) / 2;
-          if (midMs < now) midMs = (now + aEnd) / 2; // first slot, half-consumed
+          if (midMs < now) midMs = (now + aEnd) / 2;
           pts.push({ x: tsToX(midMs), y: valToY(a[field]) });
         }
         if (pts.length < 2) return;
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
-        ctx.lineCap = "butt";
+        ctx.lineCap = "round";
         ctx.setLineDash([4, 6]);
-        ctx.beginPath();
-        ctx.moveTo(pts[0].x, pts[0].y);
-        for (var p3 = 1; p3 < pts.length; p3++) ctx.lineTo(pts[p3].x, pts[p3].y);
-        ctx.stroke();
+        drawSpline(pts, ctx);
         ctx.setLineDash([]);
       };
       if (!legendHidden.pv_fc)   drawForecast("pv_w",   "#86efac", lastActualPV);
