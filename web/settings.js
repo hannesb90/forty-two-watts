@@ -121,7 +121,7 @@
   function field(label, path, type, dflt, helpText) {
     var val = getByPath(currentConfig, path, dflt);
     return '<label>' + label + (helpText ? ' ' + help(helpText) : '') + '</label>' +
-      '<input type="' + type + '" data-path="' + path + '" value="' + (val == null ? "" : val) + '">';
+      '<input type="' + type + '" data-path="' + path + '" value="' + escHtml(val == null ? "" : String(val)) + '">';
   }
 
   function selectField(label, path, options, dflt, helpText) {
@@ -217,6 +217,9 @@
             driver.capabilities = {};
             if (protocols.indexOf("mqtt") >= 0) driver.capabilities.mqtt = { host: "", port: 1883 };
             if (protocols.indexOf("modbus") >= 0) driver.capabilities.modbus = { host: "", port: 502, unit_id: 1 };
+            if (protocols.indexOf("http") >= 0) driver.capabilities.http = { allowed_hosts: ["api.easee.com"] };
+            // Cloud drivers need a config block for credentials
+            if (protocols.indexOf("http") >= 0) driver.config = { email: "", password: "", serial: "" };
             currentConfig.drivers.push(driver);
             renderTab("devices");
           });

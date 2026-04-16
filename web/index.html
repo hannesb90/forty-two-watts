@@ -280,13 +280,14 @@
   <script src="/plan.js?v=de88f43m"></script>
   <script src="/twins.js?v=de88f43m"></script>
   <script>
-    <!-- Status bar — driver health at a glance -->
+    <!-- Status bar — always visible at bottom -->
     <footer class="status-bar" id="status-bar">
       <span class="status-bar-item" id="sb-drivers">--</span>
-      <span class="status-bar-item" id="sb-uptime">--</span>
+      <span class="status-bar-spacer"></span>
       <span class="status-bar-item" id="sb-version">--</span>
     </footer>
 
+    <script>
     // UI-mode toggle (simple / advanced). Persisted to localStorage.
     (function () {
       const KEY = 'ui-mode';

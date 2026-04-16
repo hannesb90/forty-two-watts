@@ -63,7 +63,8 @@
     fetch('/api/scan')
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        var devices = data.devices || [];
+        // API returns a raw array, not {devices: [...]}
+        var devices = Array.isArray(data) ? data : (data.devices || []);
         if (devices.length === 0) {
           statusEl.innerHTML = 'No devices found. Try entering the IP manually.';
           return;

@@ -94,9 +94,6 @@ func main() {
 		}
 	}
 
-	// ---- Auto-generate EV charger driver from high-level config ----
-	cfg.InjectEVChargerDriver()
-
 	// ---- Telemetry store ----
 	tel := telemetry.NewStore()
 
@@ -198,8 +195,6 @@ func main() {
 				}
 			}
 			// Regenerate the synthetic EV charger driver entry from the
-			// high-level ev_charger config, matching what main() does at startup.
-			newCfg.InjectEVChargerDriver()
 			// Resolve relative paths
 			for i := range newCfg.Drivers {
 				if newCfg.Drivers[i].WASM != "" && !filepath.IsAbs(newCfg.Drivers[i].WASM) {
