@@ -80,6 +80,10 @@
       var path = input.dataset.path;
       var val = input.type === "number" ? parseFloat(input.value) : input.value;
       if (input.type === "number" && isNaN(val)) val = 0;
+      // Scale display units back to internal units (e.g. kWh → Wh)
+      if (input.type === "number" && input.dataset.unitScale) {
+        val = val * parseFloat(input.dataset.unitScale);
+      }
       // Don't overwrite a saved password with empty string when user hasn't typed anything
       if (input.type === "password" && val === "" && getByPath(currentConfig, path, "")) return;
       setByPath(currentConfig, path, val);
@@ -229,8 +233,8 @@
             '<label>Driver file ' + help('Path to the .wasm (or legacy .lua) driver. Absolute or relative to the config file directory.') + '</label>' +
             '<input type="text" data-path="drivers.' + idx + '.' + fmtKind + '" value="' + escHtml(driverFile) + '">' +
             '</div><div>' +
-            '<label>Battery capacity (Wh) ' + help('Nameplate storage capacity in watt-hours. Used for SoC scaling and MPC planning.') + '</label>' +
-            '<input type="number" data-path="drivers.' + idx + '.battery_capacity_wh" value="' + (d.battery_capacity_wh || 0) + '">' +
+            '<label>Battery capacity (kWh) ' + help('Nameplate storage capacity in kilowatt-hours. Stored internally as Wh.') + '</label>' +
+            '<input type="number" step="0.1" data-path="drivers.' + idx + '.battery_capacity_wh" data-unit-scale="1000" value="' + ((d.battery_capacity_wh || 0) / 1000) + '">' +
             '</div></div>' +
             '<label><input type="checkbox" data-checkbox-path="drivers.' + idx + '.is_site_meter"' + (d.is_site_meter ? ' checked' : '') + '> Site meter ' + help('Exactly one driver should be the site meter — its grid reading defines the point-of-measurement the PI loop balances.') + '</label>';
           if (mqtt) {
@@ -411,6 +415,21 @@
 
       case "ev":
         if (!currentConfig.ev_charger) currentConfig.ev_charger = {};
+        // If ev_charger is empty but an easee driver exists with config,
+        // populate the EV tab from the driver's config block so the UI
+        // reflects what's actually running.
+        if (!currentConfig.ev_charger.email && currentConfig.drivers) {
+          for (var di = 0; di < currentConfig.drivers.length; di++) {
+            var drv = currentConfig.drivers[di];
+            if (drv.name === "easee" && drv.config) {
+              currentConfig.ev_charger.provider = "easee";
+              currentConfig.ev_charger.email = drv.config.email || "";
+              currentConfig.ev_charger.password = drv.config.password || "";
+              currentConfig.ev_charger.serial = drv.config.serial || "";
+              break;
+            }
+          }
+        }
         var evHasPassword = !!getByPath(currentConfig, "ev_charger.password", "");
         html = '<div id="ev-status-indicator" class="ha-status-indicator">checking…</div>' +
           '<fieldset><legend>EV Charger</legend>' +
