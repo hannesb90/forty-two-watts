@@ -273,6 +273,16 @@
       driver.capabilities.mqtt = { host: ip, port: port };
     } else if (protocol === 'http') {
       driver.capabilities.http = { allowed_hosts: [ip] };
+      // A catalog entry that declares http_hosts is a local-HTTP driver
+      // reaching a device at a known hostname — seed config.host from the
+      // IP the user just entered. Catalog entries without http_hosts are
+      // cloud drivers (Easee etc.) whose endpoint is hardcoded; those
+      // drivers key off config.email/password and shouldn't carry a host.
+      var declared = (selectedCatalog && selectedCatalog.http_hosts) || [];
+      if (declared.length > 0) {
+        driver.config = driver.config || {};
+        driver.config.host = ip;
+      }
     }
 
     // If this is the site meter, uncheck others
@@ -297,6 +307,8 @@
       detail = d.capabilities.modbus.host + ':' + d.capabilities.modbus.port;
     } else if (d.capabilities.mqtt) {
       detail = d.capabilities.mqtt.host + ':' + d.capabilities.mqtt.port;
+    } else if (d.capabilities.http) {
+      detail = (d.config && d.config.host) || (d.capabilities.http.allowed_hosts || [])[0] || '';
     }
     var tags = [];
     if (d.is_site_meter) tags.push('site meter');

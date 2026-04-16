@@ -221,7 +221,15 @@
             if (protocols.indexOf("http") >= 0) {
               var hosts = (chosen.dataset.httpHosts || "").split(",").filter(Boolean);
               driver.capabilities.http = { allowed_hosts: hosts };
-              driver.config = { email: "", password: "", serial: "" };
+              // A driver that declares http_hosts in its catalog block is
+              // reaching a known local device at a fixed hostname — seed a
+              // config.host field. Anything else is a cloud driver whose
+              // vendor endpoint is hardcoded and instead needs auth creds.
+              if (hosts.length > 0) {
+                driver.config = { host: hosts[0] };
+              } else {
+                driver.config = { email: "", password: "", serial: "" };
+              }
             }
             currentConfig.drivers.push(driver);
             renderTab("devices");
@@ -276,8 +284,26 @@
               '<input type="number" data-path="drivers.' + idx + '.capabilities.modbus.unit_id" value="' + (modbus.unit_id || 1) + '">' +
               '</fieldset>';
           }
-          // Cloud API drivers (e.g. Easee) — show auth fields inline
-          var isCloudDriver = (driverFile || '').indexOf('easee_cloud') >= 0 || (cap.http != null);
+          // Distinguish "local HTTP driver that needs an IP" (e.g. Sourceful
+          // Zap) from "cloud API driver that needs creds" (e.g. Easee) by
+          // the config shape the driver declared: config.host → local,
+          // config.email/password → cloud. Name-based matching rots the
+          // moment a new driver lands. If only an http capability is set
+          // and the config is empty, fall back to cloud so a hand-edited
+          // yaml still surfaces the auth form.
+          var dcfg = d.config || {};
+          var hasHostField = Object.prototype.hasOwnProperty.call(dcfg, 'host');
+          var hasAuthField = Object.prototype.hasOwnProperty.call(dcfg, 'email') ||
+                             Object.prototype.hasOwnProperty.call(dcfg, 'password');
+          var isLocalHTTP = cap.http != null && hasHostField;
+          var isCloudDriver = cap.http != null && !hasHostField && (hasAuthField || Object.keys(dcfg).length === 0);
+          if (isLocalHTTP) {
+            var lcfg = d.config || {};
+            html += '<fieldset><legend>HTTP</legend>' +
+              '<label>Host / IP ' + help('Hostname (e.g. zap.local) or IP address of the device. mDNS names work when your OS resolver supports them; otherwise use the LAN IP.') + '</label>' +
+              '<input type="text" data-path="drivers.' + idx + '.config.host" value="' + escHtml(lcfg.host || '') + '" placeholder="zap.local">' +
+              '</fieldset>';
+          }
           if (isCloudDriver) {
             var cfg = d.config || {};
             // Server sets has_password=true via MaskSecrets when a password
