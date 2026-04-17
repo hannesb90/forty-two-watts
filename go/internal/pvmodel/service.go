@@ -80,6 +80,25 @@ func (s *Service) Model() Model {
 	return *s.model
 }
 
+// SetRated updates the array nameplate (W) used by the model's output
+// envelope, input outlier guards, and cold-start prior. Learned RLS
+// coefficients are NOT reset — the twin has already adapted to reality
+// so the learned fit stays more accurate than a fresh prior. Call
+// `POST /api/pvmodel/reset` separately if the array itself changed
+// and you want the model to re-seed.
+func (s *Service) SetRated(w float64) {
+	if s == nil || w <= 0 {
+		return
+	}
+	s.mu.Lock()
+	prev := s.model.RatedW
+	s.model.RatedW = w
+	s.mu.Unlock()
+	if prev != w {
+		slog.Info("pvmodel rated updated", "old_w", prev, "new_w", w)
+	}
+}
+
 // Predict is the main integration point: MPC + UI call this to get the
 // twin's prediction for any future instant.
 //

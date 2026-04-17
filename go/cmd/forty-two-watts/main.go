@@ -206,6 +206,14 @@ func main() {
 	cfgMu := &sync.RWMutex{}
 	modelsMu := &sync.Mutex{}
 
+	// Pre-declare services that the hot-reload Applier needs to touch.
+	// The Applier closure captures these by reference; they're assigned
+	// further down when their packages are wired, and the Applier only
+	// ever fires after `watcher.Start()` — by which point everything is
+	// in place.
+	var pvSvc *pvmodel.Service
+	var forecastSvc *forecast.Service
+
 	// ---- Config hot-reload watcher ----
 	watcher, err := configreload.New(*configPath, cfgMu, cfg, ctrlMu, ctrl,
 		func(newCfg, oldCfg *config.Config) {
@@ -228,6 +236,40 @@ func main() {
 				capacities[k] = v
 			}
 			capMu.Unlock()
+
+			// Weather diff → push live into the PV twin + forecast
+			// fetcher without a process restart. Users adjust rated PV
+			// + lat/lon from Settings and expect the change to take
+			// effect right away.
+			if newCfg.Weather != nil {
+				oldLat, oldLon, oldRated := 0.0, 0.0, 0.0
+				if oldCfg.Weather != nil {
+					oldLat = oldCfg.Weather.Latitude
+					oldLon = oldCfg.Weather.Longitude
+					oldRated = oldCfg.Weather.PVRatedW
+				}
+				newRated := newCfg.Weather.PVRatedW
+				if newRated > 0 && newRated != oldRated {
+					if pvSvc != nil {
+						pvSvc.SetRated(newRated)
+					}
+					if forecastSvc != nil {
+						forecastSvc.RatedPVW = newRated
+					}
+				}
+				newLat := newCfg.Weather.Latitude
+				newLon := newCfg.Weather.Longitude
+				if newLat != oldLat || newLon != oldLon {
+					if pvSvc != nil {
+						pvSvc.ClearSky = func(t time.Time) float64 { return forecast.ClearSkyW(newLat, newLon, t) }
+					}
+					if forecastSvc != nil {
+						forecastSvc.Lat = newLat
+						forecastSvc.Lon = newLon
+					}
+					slog.Info("weather location updated", "lat", newLat, "lon", newLon)
+				}
+			}
 		})
 	if err != nil {
 		slog.Warn("could not start config watcher", "err", err)
@@ -284,7 +326,7 @@ func main() {
 			ratedPVW = 10000
 		}
 	}
-	forecastSvc := forecast.FromConfig(cfg.Weather, ratedPVW, st,
+	forecastSvc = forecast.FromConfig(cfg.Weather, ratedPVW, st,
 		"forty-two-watts/"+Version+" github.com/frahlg/forty-two-watts")
 	if forecastSvc != nil {
 		forecastSvc.Start(ctx)
@@ -294,7 +336,7 @@ func main() {
 	}
 
 	// ---- Start PV digital twin (optional, requires weather config) ----
-	var pvSvc *pvmodel.Service
+	// pvSvc is pre-declared above so the reload Applier can update it.
 	if cfg.Weather != nil && cfg.Weather.Provider != "" && cfg.Weather.Provider != "none" {
 		lat, lon := cfg.Weather.Latitude, cfg.Weather.Longitude
 		clearSkyFn := func(t time.Time) float64 { return forecast.ClearSkyW(lat, lon, t) }
