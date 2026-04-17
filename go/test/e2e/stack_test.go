@@ -329,10 +329,33 @@ func setupStack(t *testing.T) *stack {
 		}
 	}()
 
-	// Give drivers time to init + first telemetry to flow. Sungrow polls at
-	// 2s intervals so we need at least 2.5s for both to have emitted.
-	time.Sleep(3 * time.Second)
+	// Wait until the ferroamp driver has received and parsed its first
+	// MQTT message (pv_w becomes non-zero). The old fixed 3s sleep was
+	// tuned for the WASM driver runtime; Lua's `driver_init` + first MQTT
+	// round-trip is slower and variable, which caused /api/status to be
+	// read before any telemetry had landed.
+	s.waitForPV(10 * time.Second)
 	return s
+}
+
+func (s *stack) waitForPV(timeout time.Duration) {
+	s.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(s.baseURL() + "/api/status")
+		if err == nil {
+			var status map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&status)
+			resp.Body.Close()
+			if pv, ok := status["pv_w"].(float64); ok && pv != 0 {
+				return
+			}
+		} else if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	s.t.Fatalf("timed out after %s waiting for pv_w telemetry", timeout)
 }
 
 func (s *stack) Close() {
