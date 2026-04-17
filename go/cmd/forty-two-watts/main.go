@@ -112,11 +112,15 @@ func main() {
 	ctrl := control.NewState(cfg.Site.GridTargetW, cfg.Site.GridToleranceW, cfg.SiteMeterDriver())
 	ctrl.SlewRateW = cfg.Site.SlewRateW
 	ctrl.MinDispatchIntervalS = cfg.Site.MinDispatchIntervalS
-	// Restore persisted mode + target if present
+	// Restore persisted mode + target if present. The planner variants
+	// have to be listed too — without them the strategy the user picked in
+	// the UI (planner_self / planner_cheap / planner_arbitrage) is silently
+	// dropped on restart and the dashboard appears to forget the selection.
 	if v, ok := st.LoadConfig("mode"); ok {
 		switch control.Mode(v) {
 		case control.ModeIdle, control.ModeSelfConsumption, control.ModePeakShaving,
-			control.ModeCharge, control.ModePriority, control.ModeWeighted:
+			control.ModeCharge, control.ModePriority, control.ModeWeighted,
+			control.ModePlannerSelf, control.ModePlannerCheap, control.ModePlannerArbitrage:
 			ctrl.Mode = control.Mode(v)
 		}
 	}
@@ -373,6 +377,21 @@ func main() {
 		defer mpcSvc.Stop()
 		// Inject plan → control.State so planner modes can override grid_target.
 		ctrl.PlanTarget = mpcSvc.SlotAt
+		// If the restored control mode is a planner variant, push the
+		// corresponding mpc.Mode so the plan is built with the strategy
+		// the user actually picked — not whatever cfg.planner.mode says.
+		if ctrl.Mode.IsPlannerMode() {
+			var mm mpc.Mode
+			switch ctrl.Mode {
+			case control.ModePlannerSelf:
+				mm = mpc.ModeSelfConsumption
+			case control.ModePlannerCheap:
+				mm = mpc.ModeCheapCharge
+			case control.ModePlannerArbitrage:
+				mm = mpc.ModeArbitrage
+			}
+			mpcSvc.SetMode(ctx, mm)
+		}
 		slog.Info("mpc planner started",
 			"mode", mpcSvc.Defaults.Mode,
 			"capacity_wh", mpcSvc.Defaults.CapacityWh,
