@@ -11,19 +11,22 @@
     prices: null,
     forecast: null,
     plan: null,
+    fuse: null,         // { max_amps, phases, voltage } — drives the power y-axis
     lastUpdate: null,
   };
 
   async function fetchAll() {
-    const [p, f, m] = await Promise.all([
+    const [p, f, m, c] = await Promise.all([
       fetch('/api/prices').then(r => r.json()).catch(() => ({})),
       fetch('/api/forecast').then(r => r.json()).catch(() => ({})),
       fetch('/api/mpc/plan').then(r => r.json()).catch(() => ({})),
+      fetch('/api/config').then(r => r.json()).catch(() => ({})),
     ]);
     state.prices = (p && p.items) || [];
     state.forecast = (f && f.items) || [];
     state.plan = (m && m.plan) || null;
     state.planMeta = (m && m.meta) || null;
+    state.fuse = (c && c.fuse) || null;
     state.enabled = {
       prices: p && p.enabled,
       forecast: f && f.enabled,
@@ -91,21 +94,22 @@
     // glance without reading per-slot tooltips.
     const modeBandY0 = priceY0 + priceH + 2;
 
-    // Power band in middle — covers battery + grid
+    // Power band in middle — covers battery + grid.
+    // Several later sections ("Plan battery bars", "Load forecast",
+    // predicted-zone shade, etc.) reference `plan` directly. Keep this
+    // alias — removing it leaves those `plan` references undefined and
+    // the whole render throws, wiping the chart.
+    const plan = state.plan;
     const powerY0 = modeBandY0 + modeBandH + 4;
     const powerH = plotH * 0.42;
-    // Scale based on plan battery + PV magnitudes
-    const plan = state.plan;
-    let pMagMax = 1000;
-    if (plan && plan.actions) {
-      for (const a of plan.actions) {
-        pMagMax = Math.max(pMagMax, Math.abs(a.battery_w), Math.abs(a.grid_w), Math.abs(a.pv_w));
-      }
-    } else {
-      for (const f of state.forecast || []) {
-        if (f.pv_w_estimated) pMagMax = Math.max(pMagMax, f.pv_w_estimated);
-      }
-    }
+    // Scale off the fuse (what the site can *physically* deliver) plus a
+    // 15% headroom so peak transients don't clip. e.g. 16 A × 3 φ × 230 V
+    // ≈ 11 kW → y-axis spans ±12.7 kW. A fixed scale makes it easier to
+    // eyeball plan magnitudes across runs instead of re-interpreting the
+    // axis every time the max sample changes.
+    const fuse = state.fuse || {};
+    const fuseMaxW = (fuse.max_amps || 16) * (fuse.phases || 3) * (fuse.voltage || 230);
+    let pMagMax = fuseMaxW * 1.15;
     const powerYCenter = powerY0 + powerH / 2;
     const powerY = w => powerYCenter - (w / pMagMax) * (powerH / 2);
 
@@ -233,17 +237,34 @@
     ctx.textAlign = 'left';
     ctx.fillText('Price', pad.l + 4, priceY0 + 12);
 
-    // ---- Forecast PV line (negative = generation, site sign) ----
+    // ---- PV line (negative = generation, site sign) ----
+    // Prefer the plan's own per-slot pv_w when the optimiser is running
+    // — that's the number that drove the charge/idle/discharge
+    // decisions, and it's what you want to compare against reality when
+    // the battery behaves unexpectedly (e.g. plan says 0.8 kW PV,
+    // reality is 4.6 kW, so the battery absorbs the unforecast surplus).
+    // Fall back to the raw weather forecast when there's no plan.
     ctx.strokeStyle = 'rgba(34,197,94,0.9)';
     ctx.lineWidth = 2;
     ctx.beginPath();
     let first = true;
-    for (const f of state.forecast || []) {
-      if (f.slot_ts_ms > tMax || !f.pv_w_estimated) continue;
-      const x = xScale(f.slot_ts_ms);
-      const y = powerY(-f.pv_w_estimated); // site sign
-      if (first) { ctx.moveTo(x, y); first = false; }
-      else ctx.lineTo(x, y);
+    if (plan && plan.actions && plan.actions.length) {
+      for (const a of plan.actions) {
+        if (a.slot_start_ms > tMax) break;
+        if (a.pv_w == null) continue;
+        const x = xScale(a.slot_start_ms);
+        const y = powerY(a.pv_w); // plan.pv_w is already site-signed
+        if (first) { ctx.moveTo(x, y); first = false; }
+        else ctx.lineTo(x, y);
+      }
+    } else {
+      for (const f of state.forecast || []) {
+        if (f.slot_ts_ms > tMax || !f.pv_w_estimated) continue;
+        const x = xScale(f.slot_ts_ms);
+        const y = powerY(-f.pv_w_estimated); // flip forecast → site sign
+        if (first) { ctx.moveTo(x, y); first = false; }
+        else ctx.lineTo(x, y);
+      }
     }
     ctx.stroke();
 

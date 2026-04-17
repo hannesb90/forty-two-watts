@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -99,12 +100,11 @@ func (f Fuse) MaxPowerW() float64 {
 	return f.MaxAmps * f.Voltage * float64(f.Phases)
 }
 
-// Driver is one driver entry. In the Go/WASM port, WASM is the primary format.
-// Lua is kept as a legacy fallback (not implemented in go-port initially).
+// Driver is one driver entry. Each driver is a Lua script loaded by
+// the driver host at startup (or on hot-reload via the file watcher).
 type Driver struct {
 	Name               string  `yaml:"name" json:"name"`
-	WASM               string  `yaml:"wasm,omitempty" json:"wasm,omitempty"` // path to .wasm file
-	Lua                string  `yaml:"lua,omitempty" json:"lua,omitempty"`  // legacy, path to .lua file
+	Lua                string  `yaml:"lua,omitempty" json:"lua,omitempty"` // path to .lua file
 	IsSiteMeter        bool    `yaml:"is_site_meter,omitempty" json:"is_site_meter,omitempty"`
 	BatteryCapacityWh  float64 `yaml:"battery_capacity_wh,omitempty" json:"battery_capacity_wh,omitempty"`
 	// Disabled skips this driver at startup / reload. Set via the UI when
@@ -364,39 +364,6 @@ func (incoming *Config) PreserveMaskedSecrets(existing *Config) {
 	}
 }
 
-// InjectEVChargerDriver auto-generates a driver entry from EVCharger config.
-// If a driver named "easee" already exists it is replaced; otherwise a new
-// entry is appended. This lets the Settings UI write ev_charger config and
-// never worry about raw driver YAML.
-func (c *Config) InjectEVChargerDriver() {
-	if c.EVCharger == nil || c.EVCharger.Provider != "easee" {
-		return
-	}
-	ev := c.EVCharger
-	drvCfg := map[string]any{
-		"email":    ev.Email,
-		"password": ev.Password,
-	}
-	if ev.Serial != "" {
-		drvCfg["serial"] = ev.Serial
-	}
-	d := Driver{
-		Name: "easee",
-		Lua:  "drivers/easee_cloud.lua",
-		Capabilities: Capabilities{
-			HTTP: &HTTPCapability{AllowedHosts: []string{"api.easee.com"}},
-		},
-		Config: drvCfg,
-	}
-	for i, existing := range c.Drivers {
-		if existing.Name == "easee" {
-			c.Drivers[i] = d
-			return
-		}
-	}
-	c.Drivers = append(c.Drivers, d)
-}
-
 // Load parses a config file from disk. Returns a fully-validated Config.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -406,7 +373,7 @@ func Load(path string) (*Config, error) {
 	return Parse(data, filepath.Dir(path))
 }
 
-// Parse parses config bytes and validates. baseDir resolves driver WASM paths.
+// Parse parses config bytes and validates. baseDir resolves driver Lua paths.
 func Parse(data []byte, baseDir string) (*Config, error) {
 	var c Config
 	if err := yaml.Unmarshal(data, &c); err != nil {
@@ -416,16 +383,51 @@ func Parse(data []byte, baseDir string) (*Config, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	// Resolve relative driver paths
+	c.ResolveDriverPaths(baseDir)
+	return &c, nil
+}
+
+// ResolveDriverPaths joins relative Lua driver paths with baseDir.
+func (c *Config) ResolveDriverPaths(baseDir string) {
 	for i := range c.Drivers {
-		if c.Drivers[i].WASM != "" && !filepath.IsAbs(c.Drivers[i].WASM) {
-			c.Drivers[i].WASM = filepath.Join(baseDir, c.Drivers[i].WASM)
-		}
+		c.Drivers[i].Lua = stripLeadingDotDot(c.Drivers[i].Lua)
 		if c.Drivers[i].Lua != "" && !filepath.IsAbs(c.Drivers[i].Lua) {
 			c.Drivers[i].Lua = filepath.Join(baseDir, c.Drivers[i].Lua)
 		}
 	}
-	return &c, nil
+}
+
+func stripLeadingDotDot(p string) string {
+	for strings.HasPrefix(p, "../") {
+		p = p[3:]
+	}
+	return p
+}
+
+// UnresolveDriverPaths converts resolved driver paths back to config-relative form.
+//
+// Paths that are outside baseDir (filepath.Rel would yield a ../-prefixed
+// result) are left absolute — otherwise the next ResolveDriverPaths would
+// strip the leading ../ via stripLeadingDotDot and silently re-anchor the
+// driver under baseDir.
+func (c *Config) UnresolveDriverPaths(baseDir string) {
+	for i := range c.Drivers {
+		c.Drivers[i].Lua = relToBaseDir(baseDir, c.Drivers[i].Lua)
+	}
+}
+
+func relToBaseDir(baseDir, p string) string {
+	if p == "" {
+		return p
+	}
+	rel, err := filepath.Rel(baseDir, p)
+	if err != nil {
+		return p
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return p
+	}
+	return rel
 }
 
 // applyDefaults fills in sensible zero-value defaults.
@@ -507,8 +509,8 @@ func (c *Config) Validate() error {
 		if d.IsSiteMeter {
 			siteMeters++
 		}
-		if d.WASM == "" && d.Lua == "" {
-			return fmt.Errorf("driver %q: must specify `wasm` or `lua`", d.Name)
+		if d.Lua == "" {
+			return fmt.Errorf("driver %q: must specify `lua`", d.Name)
 		}
 		if d.EffectiveMQTT() == nil && d.EffectiveModbus() == nil && d.Capabilities.HTTP == nil {
 			return fmt.Errorf("driver %q: must have mqtt, modbus, or http capability", d.Name)
@@ -549,7 +551,6 @@ func SaveAtomic(path string, c *Config) error {
 		copy(drivers, out.Drivers)
 		for i := range drivers {
 			drivers[i].Lua = relDriverPath(baseDir, drivers[i].Lua)
-			drivers[i].WASM = relDriverPath(baseDir, drivers[i].WASM)
 		}
 		out.Drivers = drivers
 	}

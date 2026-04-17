@@ -13,7 +13,7 @@ fuse:
   max_amps: 16
 drivers:
   - name: ferroamp
-    wasm: drivers/ferroamp.wasm
+    lua: drivers/ferroamp.lua
     is_site_meter: true
     capabilities:
       mqtt:
@@ -53,9 +53,9 @@ func TestRelativeDriverPathResolved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join("/base/dir", "drivers/ferroamp.wasm")
-	if c.Drivers[0].WASM != want {
-		t.Errorf("wasm path: got %s want %s", c.Drivers[0].WASM, want)
+	want := filepath.Join("/base/dir", "drivers/ferroamp.lua")
+	if c.Drivers[0].Lua != want {
+		t.Errorf("lua path: got %s want %s", c.Drivers[0].Lua, want)
 	}
 }
 
@@ -77,7 +77,7 @@ site: { name: x }
 fuse: { max_amps: 16 }
 drivers:
   - name: a
-    wasm: a.wasm
+    lua: a.lua
     capabilities:
       mqtt: { host: 1.1.1.1 }
 api: { port: 8080 }
@@ -94,11 +94,11 @@ site: { name: x }
 fuse: { max_amps: 16 }
 drivers:
   - name: a
-    wasm: a.wasm
+    lua: a.lua
     is_site_meter: true
     capabilities: { mqtt: { host: 1.1.1.1 } }
   - name: a
-    wasm: b.wasm
+    lua: b.lua
     capabilities: { mqtt: { host: 2.2.2.2 } }
 api: { port: 8080 }
 `
@@ -113,7 +113,7 @@ site: { name: x }
 fuse: { max_amps: 16 }
 drivers:
   - name: a
-    wasm: a.wasm
+    lua: a.lua
     is_site_meter: true
 api: { port: 8080 }
 `
@@ -122,7 +122,7 @@ api: { port: 8080 }
 	}
 }
 
-func TestRejectsDriverWithoutWasmOrLua(t *testing.T) {
+func TestRejectsDriverWithoutLua(t *testing.T) {
 	yaml := `
 site: { name: x }
 fuse: { max_amps: 16 }
@@ -133,7 +133,7 @@ drivers:
 api: { port: 8080 }
 `
 	if _, err := Parse([]byte(yaml), "."); err == nil {
-		t.Fatal("expected error for driver without wasm/lua")
+		t.Fatal("expected error for driver without lua")
 	}
 }
 
@@ -143,7 +143,7 @@ site: { name: x }
 fuse: { max_amps: 16 }
 drivers:
   - name: a
-    wasm: a.wasm
+    lua: a.lua
     is_site_meter: true
     mqtt: { host: 192.168.1.100, username: ext }
 api: { port: 8080 }
@@ -174,7 +174,7 @@ site: { name: x, smoothing_alpha: ` + pretty(bad) + ` }
 fuse: { max_amps: 16 }
 drivers:
   - name: a
-    wasm: a.wasm
+    lua: a.lua
     is_site_meter: true
     capabilities: { mqtt: { host: 1.1.1.1 } }
 api: { port: 8080 }
@@ -191,7 +191,7 @@ site: { name: Full }
 fuse: { max_amps: 16 }
 drivers:
   - name: f
-    wasm: f.wasm
+    lua: f.lua
     is_site_meter: true
     capabilities: { mqtt: { host: 1.1.1.1 } }
 api: { port: 8080 }
@@ -259,4 +259,103 @@ func TestSaveAtomicRoundtrip(t *testing.T) {
 
 func pretty(f float64) string {
 	return fmt.Sprintf("%g", f)
+}
+
+// The path-normalization helpers pulled in with the EV cloud driver PR
+// have three separate jobs that can silently conflict: stripLeadingDotDot
+// removes "../" prefixes, ResolveDriverPaths joins relative paths against
+// baseDir, and UnresolveDriverPaths goes back to config-relative form
+// before the YAML hits disk. The interesting failure is the pair —
+// Unresolve followed by Resolve must be the identity, including when the
+// driver file lives OUTSIDE baseDir (Copilot #11). Without the
+// out-of-tree guard, an absolute path like /opt/drivers/foo.lua round-
+// trips to "../opt/drivers/foo.lua" → stripLeadingDotDot → "opt/drivers/
+// foo.lua" → baseDir-joined to the wrong place.
+func TestStripLeadingDotDot(t *testing.T) {
+	cases := map[string]string{
+		"":                       "",
+		"drivers/x.lua":          "drivers/x.lua",
+		"../drivers/x.lua":       "drivers/x.lua",
+		"../../../drivers/x.lua": "drivers/x.lua",
+		"/abs/drivers/x.lua":     "/abs/drivers/x.lua",
+		"/etc/../driver/foo.lua": "/etc/../driver/foo.lua", // non-leading "../" preserved
+	}
+	for in, want := range cases {
+		if got := stripLeadingDotDot(in); got != want {
+			t.Errorf("stripLeadingDotDot(%q): got %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestResolveDriverPaths(t *testing.T) {
+	baseDir := "/etc/ftw"
+	c := &Config{Drivers: []Driver{
+		{Name: "rel", Lua: "drivers/a.lua"},
+		{Name: "absin", Lua: "/etc/ftw/drivers/b.lua"},
+		{Name: "absout", Lua: "/opt/drivers/c.lua"},
+		{Name: "escape", Lua: "../../secrets/d.lua"},
+		{Name: "empty"},
+	}}
+	c.ResolveDriverPaths(baseDir)
+	want := map[string]string{
+		"rel":    "/etc/ftw/drivers/a.lua", // joined with baseDir
+		"absin":  "/etc/ftw/drivers/b.lua", // already absolute, untouched
+		"absout": "/opt/drivers/c.lua",     // absolute outside baseDir, untouched
+		"escape": "/etc/ftw/secrets/d.lua", // leading "../" stripped, then joined
+		"empty":  "",
+	}
+	for _, d := range c.Drivers {
+		if d.Lua != want[d.Name] {
+			t.Errorf("resolve %s: got %q, want %q", d.Name, d.Lua, want[d.Name])
+		}
+	}
+}
+
+func TestUnresolveDriverPathsRoundtrip(t *testing.T) {
+	baseDir := "/etc/ftw"
+	original := []Driver{
+		{Name: "rel", Lua: "drivers/a.lua"},
+		{Name: "absin", Lua: "/etc/ftw/drivers/b.lua"}, // absolute but inside baseDir
+		{Name: "absout", Lua: "/opt/drivers/c.lua"},    // absolute outside baseDir — must stay absolute
+		{Name: "empty"},
+	}
+	c := &Config{Drivers: append([]Driver(nil), original...)}
+	c.ResolveDriverPaths(baseDir)
+	c.UnresolveDriverPaths(baseDir)
+
+	// After Unresolve, relative / in-tree absolute paths collapse back
+	// to baseDir-relative; out-of-tree absolutes must stay absolute so
+	// the next Resolve doesn't strip a "../" from filepath.Rel and
+	// silently re-anchor the driver under baseDir (Copilot #11).
+	got := map[string]string{}
+	for _, d := range c.Drivers {
+		got[d.Name] = d.Lua
+	}
+	if got["rel"] != "drivers/a.lua" {
+		t.Errorf("rel: got %q, want drivers/a.lua", got["rel"])
+	}
+	if got["absin"] != "drivers/b.lua" {
+		t.Errorf("absin: got %q, want drivers/b.lua", got["absin"])
+	}
+	if got["absout"] != "/opt/drivers/c.lua" {
+		t.Errorf("absout: got %q, want /opt/drivers/c.lua (must remain absolute)", got["absout"])
+	}
+	if got["empty"] != "" {
+		t.Errorf("empty: got %q, want empty string", got["empty"])
+	}
+
+	// Re-resolving must produce the same absolute paths as the first
+	// Resolve — the UI save/load cycle relies on this being a fixed point.
+	c.ResolveDriverPaths(baseDir)
+	want := map[string]string{
+		"rel":    "/etc/ftw/drivers/a.lua",
+		"absin":  "/etc/ftw/drivers/b.lua",
+		"absout": "/opt/drivers/c.lua",
+		"empty":  "",
+	}
+	for _, d := range c.Drivers {
+		if d.Lua != want[d.Name] {
+			t.Errorf("re-resolve %s: got %q, want %q", d.Name, d.Lua, want[d.Name])
+		}
+	}
 }

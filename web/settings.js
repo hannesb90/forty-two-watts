@@ -241,25 +241,95 @@
             currentConfig.drivers.push(driver);
             renderTab("devices");
           });
+
+          // Wire up Connect buttons for cloud drivers
+          bodyEl.querySelectorAll(".ev-connect-btn").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+              var dIdx = btn.dataset.driverIdx;
+              var statusEl = document.getElementById("ev-connect-status-" + dIdx);
+              var sel = document.getElementById("ev-charger-select-" + dIdx);
+              var emailInput = bodyEl.querySelector('[data-path="drivers.' + dIdx + '.config.email"]');
+              var pwInput = bodyEl.querySelector('[data-path="drivers.' + dIdx + '.config.password"]');
+              var email = emailInput ? emailInput.value : "";
+              var pw = pwInput ? pwInput.value : "";
+              if (!email) { if (statusEl) statusEl.textContent = "Enter email first"; return; }
+              if (statusEl) statusEl.textContent = "Connecting...";
+              btn.disabled = true;
+              // Derive the provider name from the driver's lua path so a new
+              // cloud driver can slot in without touching this button — e.g.
+              // "drivers/easee_cloud.lua" → "easee". Strip any directory
+              // prefix, the trailing "_cloud" tag, and the ".lua" extension;
+              // fall back to "easee" when nothing matches (preserves current
+              // behavior for oddly-named files and for the case where the
+              // driver config itself is missing a lua path).
+              var dCfg = currentConfig && currentConfig.drivers
+                ? currentConfig.drivers[dIdx] : null;
+              var provider = "easee";
+              if (dCfg && typeof dCfg.lua === "string" && dCfg.lua !== "") {
+                provider = dCfg.lua
+                  .replace(/^.*[\\/]/, "")   // strip dirs
+                  .replace(/\.lua$/i, "")
+                  .replace(/_cloud$/i, "");
+                if (!provider) provider = "easee";
+              }
+              fetch("/api/ev/chargers", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ provider: provider, email: email, password: pw })
+              }).then(function (r) {
+                if (!r.ok) return r.json().then(function (j) { throw new Error(j.error || "HTTP " + r.status); });
+                return r.json();
+              }).then(function (chargers) {
+                if (!sel || !Array.isArray(chargers) || chargers.length === 0) {
+                  if (statusEl) statusEl.textContent = "No chargers found";
+                  return;
+                }
+                var d = currentConfig.drivers[dIdx];
+                var current = (d && d.config && d.config.serial) || "";
+                sel.innerHTML = "";
+                chargers.forEach(function (ch) {
+                  var opt = document.createElement("option");
+                  opt.value = ch.id;
+                  opt.textContent = ch.id + (ch.name ? "  —  " + ch.name : "");
+                  if (ch.id === current) opt.selected = true;
+                  sel.appendChild(opt);
+                });
+                // Update config immediately so save picks up the selected charger.
+                // Assign via onchange (not addEventListener) so repeated Connect
+                // clicks replace the handler instead of stacking duplicates that
+                // each write to config.
+                var selected = sel.value;
+                if (d && d.config) d.config.serial = selected;
+                if (currentConfig.ev_charger) currentConfig.ev_charger.serial = selected;
+                sel.onchange = function () {
+                  if (d && d.config) d.config.serial = sel.value;
+                  if (currentConfig.ev_charger) currentConfig.ev_charger.serial = sel.value;
+                };
+                if (statusEl) statusEl.textContent = chargers.length + " charger(s) found";
+              }).catch(function (e) {
+                if (statusEl) statusEl.textContent = "Error: " + e.message;
+              }).finally(function () {
+                btn.disabled = false;
+              });
+            });
+          });
         }, 0);
         html += '<div class="devices-list">';
         currentConfig.drivers.forEach(function (d, idx) {
-          // Go-port config: d.wasm (or legacy d.lua), capabilities.mqtt/modbus
           var cap = d.capabilities || {};
           var mqtt = cap.mqtt || d.mqtt; // legacy fallback
           var modbus = cap.modbus || d.modbus;
           var protocol = mqtt ? "mqtt" : (modbus ? "modbus" : (cap.http ? "http" : "?"));
-          var driverFile = d.wasm || d.lua || "(none)";
-          var fmtKind = d.wasm ? "wasm" : (d.lua ? "lua" : "?");
+          var driverFile = d.lua || "(none)";
           html += '<div class="device-item">' +
             '<div class="device-item-header">' +
             '<strong>' + escHtml(d.name) + '</strong>' +
-            '<span style="color:var(--text-dim);font-size:0.75rem">' + fmtKind + ' · ' + protocol + ' · ' + escHtml(driverFile) + '</span>' +
+            '<span style="color:var(--text-dim);font-size:0.75rem">lua · ' + protocol + ' · ' + escHtml(driverFile) + '</span>' +
             '<button class="btn-remove" data-remove-idx="' + idx + '">Remove</button>' +
             '</div>' +
             '<div class="field-row"><div>' +
-            '<label>Driver file ' + help('Path to the .wasm (or legacy .lua) driver. Absolute or relative to the config file directory.') + '</label>' +
-            '<input type="text" data-path="drivers.' + idx + '.' + fmtKind + '" value="' + escHtml(driverFile) + '">' +
+            '<label>Driver file ' + help('Path to the .lua driver. Absolute or relative to the config file directory.') + '</label>' +
+            '<input type="text" data-path="drivers.' + idx + '.lua" value="' + escHtml(driverFile) + '">' +
             '</div><div>' +
             '<label>Battery capacity (kWh) ' + help('Nameplate storage capacity in kilowatt-hours. Stored internally as Wh.') + '</label>' +
             '<input type="number" step="0.1" data-path="drivers.' + idx + '.battery_capacity_wh" data-unit-scale="1000" value="' + ((d.battery_capacity_wh || 0) / 1000) + '">' +
@@ -322,15 +392,24 @@
               : '<span class="creds-badge creds-missing">⚠ Not saved</span>';
             html += '<fieldset><legend>Cloud credentials</legend>' +
               '<div class="field-row"><div>' +
-              '<label>Email / phone ' + help('Account email or phone number (with country code, e.g. +46...) for the cloud service.') + '</label>' +
+              '<label>Email ' + help('Account email for the cloud service.') + '</label>' +
               '<input type="text" data-path="drivers.' + idx + '.config.email" value="' + escHtml(cfg.email || '') + '">' +
               '</div><div>' +
               '<label>Password ' + pwBadge + '</label>' +
               '<input type="password" data-path="drivers.' + idx + '.config.password" value="" ' +
                 'placeholder="' + (hasPw ? '•••••••• (leave empty to keep)' : 'enter password') + '">' +
               '</div></div>' +
-              '<label>Device serial ' + help('Serial number of the charger. Leave empty to auto-detect.') + '</label>' +
-              '<input type="text" data-path="drivers.' + idx + '.config.serial" value="' + escHtml(cfg.serial || '') + '">' +
+              '<div class="field-row" style="align-items:flex-end"><div style="flex:1">' +
+              '<label>Charger ' + help('Click Connect to load chargers from your account.') + '</label>' +
+              '<select id="ev-charger-select-' + idx + '" data-path="drivers.' + idx + '.config.serial">' +
+              (cfg.serial
+                ? '<option value="' + escHtml(cfg.serial) + '" selected>' + escHtml(cfg.serial) + '</option>'
+                : '<option value="">(not connected)</option>') +
+              '</select>' +
+              '</div><div>' +
+              '<button class="btn-add ev-connect-btn" type="button" data-driver-idx="' + idx + '">Connect</button>' +
+              '</div></div>' +
+              '<span id="ev-connect-status-' + idx + '" style="font-size:0.8rem;color:var(--text-dim)"></span>' +
               '</fieldset>';
           }
           html += '</div>';

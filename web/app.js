@@ -1304,20 +1304,25 @@
       });
   }
 
+  // Fire-and-forget wrappers around postJson. postJson itself rethrows
+  // so callers that chain .then/.finally (evCommand) behave correctly;
+  // here we explicitly mark the rejection handled so the browser
+  // doesn't log "Uncaught (in promise)" on every network hiccup.
+  // postJson has already console.warn'd the failure.
   function setTarget(w) {
-    postJson("/api/target", { grid_target_w: w });
+    postJson("/api/target", { grid_target_w: w }).catch(function () {});
   }
 
   function setPeakLimit(w) {
-    postJson("/api/peak_limit", { peak_limit_w: w });
+    postJson("/api/peak_limit", { peak_limit_w: w }).catch(function () {});
   }
 
   function setEvCharging(w) {
-    postJson("/api/ev_charging", { power_w: w, active: w > 0 });
+    postJson("/api/ev_charging", { power_w: w, active: w > 0 }).catch(function () {});
   }
 
   function postJson(url, body) {
-    fetch(url, {
+    return fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -1325,11 +1330,13 @@
       .then(function (res) {
         if (!res.ok) throw new Error("HTTP " + res.status);
         fetchStatus();
+        return res;
       })
       .catch(function (e) {
         console.warn("POST failed:", url, e);
         // Don't flip connection state on POST failures —
         // connection state reflects read polling, not write commands
+        throw e;
       });
   }
 
@@ -1385,8 +1392,152 @@
     setPeakLimit(Number(peakLimitSlider.value));
   });
 
-  // EV slider removed — ev_charging_w now comes from the Easee driver.
-  // Manual override still available via /api/ev_charging (debug only).
+  // EV detail modal
+  var evModal = document.getElementById("ev-modal");
+  var evModalBody = document.getElementById("ev-modal-body");
+  var evModalClose = document.getElementById("ev-modal-close");
+  var cardEv = document.getElementById("card-ev");
+
+  // Render the EV modal by building DOM nodes (textContent) rather than
+  // concatenating strings into innerHTML — d.driver comes from driver
+  // config and would otherwise be an XSS vector if the config is edited
+  // by a lower-trust user.
+  function renderEvStatusTable(d) {
+    var status = d.charging ? "Charging" : (d.connected ? "Connected" : "Idle");
+    var rows = [
+      ["Status", status],
+      ["Power", formatW(d.w || 0)],
+    ];
+    if (d.session_wh != null) rows.push(["Session", (d.session_wh / 1000).toFixed(1) + " kWh"]);
+    if (d.driver) rows.push(["Driver", String(d.driver)]);
+
+    var table = document.createElement("table");
+    table.style.width = "100%";
+    table.style.borderCollapse = "collapse";
+    rows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      var tdLabel = document.createElement("td");
+      tdLabel.style.padding = "0.3rem 0";
+      tdLabel.style.color = "var(--text-dim)";
+      tdLabel.textContent = r[0];
+      var tdVal = document.createElement("td");
+      tdVal.style.padding = "0.3rem 0";
+      tdVal.style.textAlign = "right";
+      tdVal.style.fontWeight = "600";
+      tdVal.textContent = r[1];
+      tr.appendChild(tdLabel);
+      tr.appendChild(tdVal);
+      table.appendChild(tr);
+    });
+    return table;
+  }
+
+  function setEvModalMessage(text) {
+    evModalBody.textContent = "";
+    var p = document.createElement("p");
+    p.style.color = "var(--text-dim)";
+    p.textContent = text;
+    evModalBody.appendChild(p);
+  }
+
+  function refreshEvModal() {
+    fetch("/api/ev/status").then(function (r) { return r.json(); }).then(function (d) {
+      if (!d || d.connected === false) {
+        setEvModalMessage("No EV charger connected");
+        return;
+      }
+      evModalBody.textContent = "";
+      evModalBody.appendChild(renderEvStatusTable(d));
+    }).catch(function () {
+      setEvModalMessage("Failed to load EV status");
+    });
+  }
+
+  var evRefreshTimer = null;
+  if (cardEv && evModal) {
+    var evBtnStart = document.getElementById("ev-btn-start");
+    var evBtnPause = document.getElementById("ev-btn-pause");
+    var evBtnResume = document.getElementById("ev-btn-resume");
+    var evActionBtns = [evBtnStart, evBtnPause, evBtnResume];
+    // Focus-trap bounds — first and last focusable controls in the modal.
+    // Tab from the last wraps to the first and vice versa.
+    var evFocusable = [evModalClose, evBtnStart, evBtnPause, evBtnResume];
+    var evLastFocused = null;
+
+    function openEvModal() {
+      evLastFocused = document.activeElement;
+      evModal.classList.remove("hidden");
+      evModal.setAttribute("aria-hidden", "false");
+      refreshEvModal();
+      // Guard against stacked timers if the card is clicked while the
+      // modal is still open (e.g. background click that didn't close).
+      if (evRefreshTimer) { clearInterval(evRefreshTimer); }
+      evRefreshTimer = setInterval(refreshEvModal, 5000);
+      // Focus lands on the close button so ESC/Enter work immediately.
+      setTimeout(function () { evModalClose.focus(); }, 0);
+    }
+    function closeEvModal() {
+      evModal.classList.add("hidden");
+      evModal.setAttribute("aria-hidden", "true");
+      if (evRefreshTimer) { clearInterval(evRefreshTimer); evRefreshTimer = null; }
+      if (evLastFocused && typeof evLastFocused.focus === "function") {
+        evLastFocused.focus();
+      }
+    }
+    function isEvModalOpen() { return !evModal.classList.contains("hidden"); }
+
+    cardEv.addEventListener("click", openEvModal);
+    // The card has role="button" + tabindex="0" so it's keyboard-focusable;
+    // WAI-ARIA requires Enter + Space to activate a role="button" element.
+    cardEv.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openEvModal();
+      }
+    });
+    evModalClose.addEventListener("click", closeEvModal);
+    evModal.addEventListener("click", function (e) {
+      if (e.target === evModal) closeEvModal();
+    });
+    // ESC-to-close + Tab focus trap. Attached to the modal itself so the
+    // listener is only live while one of its descendants has focus.
+    evModal.addEventListener("keydown", function (e) {
+      if (!isEvModalOpen()) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeEvModal();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      var enabled = evFocusable.filter(function (b) { return b && !b.disabled; });
+      if (enabled.length === 0) return;
+      var first = enabled[0];
+      var last = enabled[enabled.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    });
+
+    function evCommand(action) {
+      // Disable all three action buttons while any command is inflight so
+      // a Pause→Resume double-click can't send both. The close button
+      // stays enabled so the user can always dismiss the modal.
+      evActionBtns.forEach(function (b) { b.disabled = true; });
+      postJson("/api/ev/command", { action: action })
+        .catch(function () { /* postJson already logs */ })
+        .finally(function () {
+          refreshEvModal();
+          evActionBtns.forEach(function (b) { b.disabled = false; });
+        });
+    }
+    evBtnStart.addEventListener("click", function () { evCommand("ev_start"); });
+    evBtnPause.addEventListener("click", function () { evCommand("ev_pause"); });
+    evBtnResume.addEventListener("click", function () { evCommand("ev_resume"); });
+  }
 
   // Click-to-toggle legend items. Each item has data-toggle with a
   // key; clicking toggles visibility of the matching series and

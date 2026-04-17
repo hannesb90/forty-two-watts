@@ -1,5 +1,4 @@
 // forty-two-watts — Home Energy Management System.
-// Go + WASM driver port. See /MIGRATION_PLAN.md.
 //
 // Don't Panic 🐬
 package main
@@ -51,7 +50,20 @@ var Version = "dev"
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to config.yaml")
 	webDir := flag.String("web", "web", "Path to static web UI directory")
+	driverDirFlag := flag.String("drivers", "", "Path to drivers directory (default: <config-dir>/drivers)")
 	flag.Parse()
+
+	// Drivers default to a sibling of the config file (historical layout:
+	// config.yaml + drivers/ + seed/ + state.db all under one dir). Docker
+	// breaks that convention because /app/data is a host bind mount while
+	// drivers are baked into the image at /app/drivers — the flag lets the
+	// CMD point at the immutable image location.
+	resolveDriverDir := func() string {
+		if *driverDirFlag != "" {
+			return *driverDirFlag
+		}
+		return filepath.Join(filepath.Dir(*configPath), "drivers")
+	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
@@ -61,8 +73,7 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		if isConfigMissing(err) {
-			driverDir := filepath.Join(filepath.Dir(*configPath), "drivers")
-			runBootstrap(*configPath, *webDir, driverDir)
+			runBootstrap(*configPath, *webDir, resolveDriverDir())
 			return
 		}
 		slog.Error("load config", "err", err)
@@ -101,11 +112,15 @@ func main() {
 	ctrl := control.NewState(cfg.Site.GridTargetW, cfg.Site.GridToleranceW, cfg.SiteMeterDriver())
 	ctrl.SlewRateW = cfg.Site.SlewRateW
 	ctrl.MinDispatchIntervalS = cfg.Site.MinDispatchIntervalS
-	// Restore persisted mode + target if present
+	// Restore persisted mode + target if present. The planner variants
+	// have to be listed too — without them the strategy the user picked in
+	// the UI (planner_self / planner_cheap / planner_arbitrage) is silently
+	// dropped on restart and the dashboard appears to forget the selection.
 	if v, ok := st.LoadConfig("mode"); ok {
 		switch control.Mode(v) {
 		case control.ModeIdle, control.ModeSelfConsumption, control.ModePeakShaving,
-			control.ModeCharge, control.ModePriority, control.ModeWeighted:
+			control.ModeCharge, control.ModePriority, control.ModeWeighted,
+			control.ModePlannerSelf, control.ModePlannerCheap, control.ModePlannerArbitrage:
 			ctrl.Mode = control.Mode(v)
 		}
 	}
@@ -140,7 +155,7 @@ func main() {
 	// ---- Self-tune coordinator ----
 	selfTune := selftune.NewCoordinator()
 
-	// ---- WASM driver registry ----
+	// ---- Driver registry ----
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reg := drivers.NewRegistry(tel)
@@ -151,15 +166,12 @@ func main() {
 		return modbuscli.Dial(c.Host, c.Port, c.UnitID)
 	}
 	reg.ARPLookup = arp.Lookup
-	// Spawn initial drivers
+	// Spawn initial drivers. config.Load has already joined relative Lua
+	// paths with the config directory — nothing to resolve here.
 	for _, d := range cfg.Drivers {
 		if d.Disabled {
 			slog.Info("driver skipped (disabled)", "name", d.Name)
 			continue
-		}
-		// Resolve relative WASM paths against config dir
-		if d.WASM != "" && !filepath.IsAbs(d.WASM) {
-			d.WASM = filepath.Join(filepath.Dir(*configPath), d.WASM)
 		}
 		if err := reg.Add(ctx, d); err != nil {
 			slog.Warn("failed to spawn driver", "name", d.Name, "err", err)
@@ -198,13 +210,8 @@ func main() {
 					newCfg.EVCharger.Password = pw
 				}
 			}
-			// Regenerate the synthetic EV charger driver entry from the
-			// Resolve relative paths
-			for i := range newCfg.Drivers {
-				if newCfg.Drivers[i].WASM != "" && !filepath.IsAbs(newCfg.Drivers[i].WASM) {
-					newCfg.Drivers[i].WASM = filepath.Join(filepath.Dir(*configPath), newCfg.Drivers[i].WASM)
-				}
-			}
+			// Driver paths are already resolved by config.Load; no extra
+			// work needed here.
 			reg.Reload(ctx, newCfg.Drivers)
 			// Refresh capacities — mutate the existing map in place so
 			// Deps.Capacities (a map header captured at init) sees the
@@ -370,6 +377,21 @@ func main() {
 		defer mpcSvc.Stop()
 		// Inject plan → control.State so planner modes can override grid_target.
 		ctrl.PlanTarget = mpcSvc.SlotAt
+		// If the restored control mode is a planner variant, push the
+		// corresponding mpc.Mode so the plan is built with the strategy
+		// the user actually picked — not whatever cfg.planner.mode says.
+		if ctrl.Mode.IsPlannerMode() {
+			var mm mpc.Mode
+			switch ctrl.Mode {
+			case control.ModePlannerSelf:
+				mm = mpc.ModeSelfConsumption
+			case control.ModePlannerCheap:
+				mm = mpc.ModeCheapCharge
+			case control.ModePlannerArbitrage:
+				mm = mpc.ModeArbitrage
+			}
+			mpcSvc.SetMode(ctx, mm)
+		}
 		slog.Info("mpc planner started",
 			"mode", mpcSvc.Defaults.Mode,
 			"capacity_wh", mpcSvc.Defaults.CapacityWh,
@@ -387,6 +409,7 @@ func main() {
 		State: st,
 		CapMu: capMu, Capacities: capacities,
 		CfgMu: cfgMu, Cfg: cfg, ConfigPath: *configPath,
+		DriverDir: resolveDriverDir(),
 		Models: models, ModelsMu: modelsMu,
 		SelfTune: selfTune,
 		DtS:        float64(cfg.Site.ControlIntervalS),
@@ -724,6 +747,26 @@ func buildMPC(cfg *config.Config, st *state.Store, tel *telemetry.Store, capacit
 	if totalCap <= 0 {
 		slog.Warn("mpc: no battery capacity — skipping")
 		return nil
+	}
+	// Clamp aggregate charge/discharge to the grid fuse capacity. The
+	// control loop's fuse guard enforces this per-tick anyway, but a
+	// planner that schedules 45 kW of charge through a 16 A fuse (11 kW)
+	// produces SoC projections that can never be realised — the optimiser
+	// "charges" to 100% in the plan while the battery barely budges in
+	// reality, and every downstream decision (when to discharge, when to
+	// idle, what the total cost looks like) is based on that fantasy.
+	// Cheaper to keep the plan feasible up-front.
+	if fuseMaxW := cfg.Fuse.MaxPowerW(); fuseMaxW > 0 {
+		if maxChg > fuseMaxW {
+			slog.Info("mpc: clamping MaxChargeW to fuse capacity",
+				"requested_w", maxChg, "fuse_w", fuseMaxW)
+			maxChg = fuseMaxW
+		}
+		if maxDis > fuseMaxW {
+			slog.Info("mpc: clamping MaxDischargeW to fuse capacity",
+				"requested_w", maxDis, "fuse_w", fuseMaxW)
+			maxDis = fuseMaxW
+		}
 	}
 	pl := cfg.Planner
 	zone := "SE3"

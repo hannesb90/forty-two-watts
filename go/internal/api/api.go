@@ -23,6 +23,7 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/config"
 	"github.com/frahlg/forty-two-watts/go/internal/control"
 	"github.com/frahlg/forty-two-watts/go/internal/drivers"
+	"github.com/frahlg/forty-two-watts/go/internal/evcloud"
 	"github.com/frahlg/forty-two-watts/go/internal/forecast"
 	"github.com/frahlg/forty-two-watts/go/internal/ha"
 	"github.com/frahlg/forty-two-watts/go/internal/loadmodel"
@@ -57,6 +58,7 @@ type Deps struct {
 	CfgMu      *sync.RWMutex
 	Cfg        *config.Config
 	ConfigPath string
+	DriverDir  string // where to scan for Lua drivers (default: <config-dir>/drivers)
 	Models     map[string]*battery.Model
 	ModelsMu   *sync.Mutex
 	SelfTune   *selftune.Coordinator
@@ -80,8 +82,8 @@ type Deps struct {
 	// Optional: HA MQTT bridge (nil if disabled).
 	HA *ha.Bridge
 
-	// Driver registry — used by lifecycle endpoints (restart/disable/enable).
-	// Nil disables those endpoints (returns 503).
+	// Driver registry — used by lifecycle endpoints (restart/disable/enable)
+	// and EV command dispatch. Nil disables those endpoints (returns 503).
 	Registry *drivers.Registry
 
 	Version string
@@ -145,6 +147,9 @@ func (s *Server) routes() {
 	s.handle("GET  /api/series/catalog", s.handleSeriesCatalog)
 	s.handle("GET  /api/devices", s.handleDevices)
 	s.handle("GET  /api/scan", s.handleScan)
+	s.handle("GET  /api/ev/status", s.handleEVStatus)
+	s.handle("POST /api/ev/command", s.handleEVCommand)
+	s.handle("POST /api/ev/chargers", s.handleEVChargers)
 
 	// ---- Static web UI ----
 	// Everything not matched above falls through to the static server.
@@ -484,6 +489,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := *s.deps.Cfg
 	s.deps.CfgMu.RUnlock()
 	masked := cfg.MaskSecrets()
+	// Strip resolved driver paths back to config-relative form so the UI
+	// doesn't display (and round-trip) paths like "../drivers/foo.lua".
+	masked.UnresolveDriverPaths(filepath.Dir(s.deps.ConfigPath))
 	// EV charger password lives in state.db, not YAML. Signal to the UI
 	// that a password is set by using a masked placeholder (MaskSecrets
 	// blanked it to "").
@@ -518,9 +526,8 @@ func (s *Server) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 				slog.Warn("failed to persist ev_charger_password", "err", err)
 			}
 		}
-		// Restore the real password into the in-memory config so
-		// InjectEVChargerDriver (called by the config-reload watcher)
-		// sees it.
+		// Restore the real password into the in-memory config so the
+		// config-reload watcher sees it on the next apply.
 		if stored, ok := s.deps.State.LoadConfig(evPasswordKey); ok {
 			newCfg.EVCharger.Password = stored
 		}
@@ -669,8 +676,12 @@ func (s *Server) handleDrivers(w http.ResponseWriter, r *http.Request) {
 // drivers/ directory, parsed from each .lua file's DRIVER metadata.
 // Used by the Settings UI to offer an "Add from catalog" dropdown.
 func (s *Server) handleDriversCatalog(w http.ResponseWriter, r *http.Request) {
-	// Catalog lives next to the config file by convention.
-	dir := filepath.Join(filepath.Dir(s.deps.ConfigPath), "drivers")
+	// Default is next to the config file; overridable via -drivers for
+	// deployments (Docker) where drivers live in the image, not the data volume.
+	dir := s.deps.DriverDir
+	if dir == "" {
+		dir = filepath.Join(filepath.Dir(s.deps.ConfigPath), "drivers")
+	}
 	entries, err := drivers.LoadCatalog(dir)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"path": dir, "entries": []any{}, "error": err.Error()})
@@ -1245,4 +1256,111 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	// Always-revalidate so version bumps land immediately
 	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 	http.ServeFile(w, r, clean)
+}
+
+// GET /api/ev/status — detailed EV charger state for the dashboard modal.
+func (s *Server) handleEVStatus(w http.ResponseWriter, r *http.Request) {
+	readings := s.deps.Tel.ReadingsByType(telemetry.DerEV)
+	if len(readings) == 0 {
+		writeJSON(w, 200, map[string]any{"connected": false})
+		return
+	}
+	rd := readings[0]
+	resp := map[string]any{
+		"driver":  rd.Driver,
+		"w":       rd.RawW,
+		"updated": rd.UpdatedAt,
+	}
+	if len(rd.Data) > 0 {
+		var data map[string]any
+		if err := json.Unmarshal(rd.Data, &data); err == nil {
+			for k, v := range data {
+				resp[k] = v
+			}
+		}
+	}
+	writeJSON(w, 200, resp)
+}
+
+// POST /api/ev/command — send a command to the EV charger driver.
+//
+// Action is validated against an allowlist of known Lua-driver verbs so the
+// API doesn't silently 200-OK a typo'd action: the Lua command hook returns
+// no value for unknown actions, which looks like success to the registry.
+var validEVActions = map[string]bool{
+	"ev_start":       true,
+	"ev_pause":       true,
+	"ev_resume":      true,
+	"ev_set_current": true,
+}
+
+func (s *Server) handleEVCommand(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid request"})
+		return
+	}
+	if !validEVActions[req.Action] {
+		writeJSON(w, 400, map[string]string{"error": "unsupported action"})
+		return
+	}
+	if s.deps.Registry == nil {
+		writeJSON(w, 503, map[string]string{"error": "driver registry not available"})
+		return
+	}
+	readings := s.deps.Tel.ReadingsByType(telemetry.DerEV)
+	if len(readings) == 0 {
+		writeJSON(w, 404, map[string]string{"error": "no EV driver active"})
+		return
+	}
+	driverName := readings[0].Driver
+	payload, _ := json.Marshal(map[string]any{"action": req.Action})
+	if err := s.deps.Registry.Send(r.Context(), driverName, payload); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
+
+// POST /api/ev/chargers — authenticate with an EV cloud provider and list chargers.
+func (s *Server) handleEVChargers(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider string `json:"provider"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid request"})
+		return
+	}
+	if req.Provider == "" {
+		req.Provider = "easee"
+	}
+	if req.Email == "" {
+		writeJSON(w, 400, map[string]string{"error": "email required"})
+		return
+	}
+	if req.Password == "" {
+		if pw, ok := s.deps.State.LoadConfig(evPasswordKey); ok {
+			req.Password = pw
+		}
+	}
+	if req.Password == "" {
+		writeJSON(w, 400, map[string]string{"error": "password required"})
+		return
+	}
+
+	p, err := evcloud.Get(req.Provider)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	chargers, err := p.ListChargers(req.Email, req.Password)
+	if err != nil {
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, chargers)
 }
