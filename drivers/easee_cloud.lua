@@ -40,6 +40,15 @@ local access_token = nil
 local refresh_token = nil
 local token_expires_at = 0   -- millis
 local charger_serial = nil
+local phases = 3   -- populated from config.phases (if present) in driver_init
+
+-- Easee error bodies have historically echoed submitted form data
+-- (credentials, tokens). Strip the body and keep only the status prefix
+-- so nothing sensitive ever lands in the driver log.
+local function redact_http_err(err)
+    if err == nil then return "request failed" end
+    return tostring(err):match("^(HTTP %d+)") or "request failed"
+end
 
 -- ---- Auth helpers ----
 
@@ -47,11 +56,7 @@ local function login(email, password)
     local body = host.json_encode({userName = email, password = password})
     local resp, err = host.http_post(BASE_URL .. "/accounts/login", body)
     if err then
-        -- Easee validation errors have been observed to echo submitted form
-        -- data in the response body. Log only the status prefix so the
-        -- password can't leak into disk logs.
-        local status_only = tostring(err):match("^(HTTP %d+)") or "request failed"
-        host.log("error", "Easee login failed: " .. status_only)
+        host.log("error", "Easee login failed: " .. redact_http_err(err))
         return false
     end
     local data = host.json_decode(resp)
@@ -76,7 +81,7 @@ local function do_refresh()
     })
     local resp, err = host.http_post(BASE_URL .. "/accounts/refresh_token", body)
     if err then
-        host.log("warn", "Easee token refresh failed: " .. tostring(err))
+        host.log("warn", "Easee token refresh failed: " .. redact_http_err(err))
         return false
     end
     local data = host.json_decode(resp)
@@ -216,6 +221,16 @@ function driver_init(config)
     if email == "" then email = nil end
     if password == "" then password = nil end
 
+    -- Phases: default to 3 since that's the common European install.
+    -- Users on a single-phase service (Easee Home <11 kW) must set
+    -- `phases: 1` in config, otherwise amperage math for ev_set_current
+    -- is 3x under-requested and can fall below the 6 A Easee minimum
+    -- (silently halting the session).
+    if config and tonumber(config.phases) then
+        local p = math.floor(tonumber(config.phases))
+        if p == 1 or p == 2 or p == 3 then phases = p end
+    end
+
     if not email or not password then
         host.log("error", "Easee: email and password required in driver config")
         return
@@ -230,7 +245,7 @@ function driver_init(config)
     if not charger_serial then
         local chargers, cerr = get_chargers()
         if cerr or not chargers or #chargers == 0 then
-            host.log("error", "Easee: could not list chargers: " .. tostring(cerr))
+            host.log("error", "Easee: could not list chargers: " .. redact_http_err(cerr))
             return
         end
         charger_serial = chargers[1].id
@@ -253,7 +268,7 @@ function driver_poll()
 
     local obs, err = get_observations(charger_serial)
     if err or not obs then
-        host.log("warn", "Easee: observations poll failed: " .. tostring(err))
+        host.log("warn", "Easee: observations poll failed: " .. redact_http_err(err))
         return 10000
     end
 
@@ -284,7 +299,7 @@ function driver_poll()
         is_online               = is_online,
         cable_locked            = cable_locked,
         max_a                   = dyn_current,                 -- current dynamic limit (A)
-        phases                  = 3,                           -- Easee defaults 3-phase
+        phases                  = phases,                      -- from config.phases; default 3
     })
 
     if obs[OBS_VOLTAGE] then
@@ -320,8 +335,16 @@ function driver_command(action, power_w, cmd)
     elseif action == "ev_resume" then
         return post_command("/commands/resume_charging")
     elseif action == "ev_set_current" then
-        -- Easee dynamicChargerCurrent is per-phase amps; assume 3-phase.
-        local amps = math.floor((power_w or 0) / 230 / 3)
+        -- Easee dynamicChargerCurrent is per-phase amps, so divide by the
+        -- configured phase count. Round (not floor) so a request like
+        -- 4000 W on 3φ produces 6 A (4000/3/230≈5.8) rather than 5 A
+        -- which the charger would reject as below its 6 A minimum.
+        local amps = math.floor(((power_w or 0) / 230 / phases) + 0.5)
+        -- Clamp to the Easee 0..32 A permitted band. 0 pauses the session
+        -- cleanly; anything <6 A the charger rejects as below minimum, so
+        -- normalise those to 0 to avoid a silent "no current" state.
+        if amps > 0 and amps < 6 then amps = 0 end
+        if amps > 32 then amps = 32 end
         local body = host.json_encode({dynamicChargerCurrent = amps})
         local _, err = host.http_post(
             BASE_URL .. "/chargers/" .. charger_serial .. "/settings",

@@ -63,14 +63,26 @@ PROTOCOL = "http"
 
 local zap_host = "zap.local"
 local p1_serial = nil
-local pv_serials = {}   -- list of inverter serials that carry an enabled pv DER
+local pv_serials = {}     -- list of inverter serials that carry an enabled pv DER
+local discovered   = false  -- true once discover_devices has succeeded
+                             -- (even with zero PV). Prevents re-hitting
+                             -- /api/devices every poll on meter-only sites.
 
--- Backoff state for discovery / data failures: no point hammering the
--- gateway when it's unreachable.
+-- Backoff state for *discovery* (/api/devices) failures. Separate from
+-- data-fetch failures: discovery backoff must NOT gate the site meter
+-- data poll, or a transient /api/devices glitch silently stalls the
+-- site meter for up to 60 s and trips the watchdog on every network
+-- hiccup.
 local discovery_last_attempt = 0
 local discovery_backoff_ms   = 0
 local DISCOVERY_BACKOFF_MIN  = 2000
 local DISCOVERY_BACKOFF_MAX  = 60000
+
+-- Rediscover after this many consecutive P1 data-fetch failures. The
+-- P1 serial could rotate on a dev gateway reboot, so we fall back to a
+-- fresh discovery if data keeps failing.
+local p1_fail_count       = 0
+local P1_FAIL_REDISCOVER  = 10
 
 local function base_url()
     -- Accept both "zap.local" and "http://zap.local" styles.
@@ -180,61 +192,65 @@ function driver_init(config)
 end
 
 function driver_poll()
-    -- Phase 1: discover P1 + PV inverters if we don't know them yet.
-    if not p1_serial or #pv_serials == 0 then
-        -- Skip if the user pinned config.serial and we already have it;
-        -- otherwise run discovery whenever p1 is missing OR we haven't
-        -- enumerated inverters yet.
-        local need_discovery = (not p1_serial) or (p1_serial and #pv_serials == 0)
-        if need_discovery then
-            if in_backoff() then
-                return 1000
-            end
-            local p1, pvs, err = discover_devices()
-            if err then
-                bump_backoff()
-                host.log("warn", "Zap: discovery failed: " .. tostring(err)
-                    .. " (retry in " .. discovery_backoff_ms .. "ms)")
-                return 1000
-            end
-            if not p1_serial then
-                p1_serial = p1
-                host.set_sn(p1_serial)
-                host.log("info", "Zap: discovered P1 meter " .. p1_serial)
-            end
-            pv_serials = pvs
-            if #pv_serials > 0 then
-                host.log("info", "Zap: discovered " .. #pv_serials
-                    .. " PV inverter(s): " .. table.concat(pv_serials, ","))
-            else
-                host.log("info", "Zap: no PV inverters found")
-            end
-            clear_backoff()
+    -- Phase 1: discover P1 + PV inverters once. Re-run only if a flag
+    -- explicitly invalidates the cached set (e.g. persistent P1-fetch
+    -- failures re-trigger it below). For meter-only Zap deploys, this
+    -- means we don't re-hit /api/devices every poll logging "no PV
+    -- inverters found" — discovery latches after the first success.
+    if not discovered then
+        if in_backoff() then
+            return 1000
         end
+        local p1, pvs, err = discover_devices()
+        if err then
+            bump_backoff()
+            host.log("warn", "Zap: discovery failed: " .. tostring(err)
+                .. " (retry in " .. discovery_backoff_ms .. "ms)")
+            return 1000
+        end
+        if not p1_serial then
+            p1_serial = p1
+            host.set_sn(p1_serial)
+            host.log("info", "Zap: discovered P1 meter " .. p1_serial)
+        end
+        pv_serials = pvs
+        if #pv_serials > 0 then
+            host.log("info", "Zap: discovered " .. #pv_serials
+                .. " PV inverter(s): " .. table.concat(pv_serials, ","))
+        else
+            host.log("info", "Zap: no PV inverters found")
+        end
+        discovered = true
+        clear_backoff()
     end
 
     -- Phase 2: poll the P1 meter.
+    -- P1 fetch failures get their OWN counter — they must NOT gate the
+    -- discovery backoff (which applies to /api/devices only). A transient
+    -- HTTP glitch should just log and let the next 1 s tick retry; after
+    -- N consecutive failures we invalidate the cached discovery and
+    -- fall back to /api/devices in case the Zap rebooted / the P1 serial
+    -- rotated.
     local data, err = fetch_device(p1_serial)
     if err then
-        bump_backoff()
-        host.log("warn", "Zap: P1 data fetch failed: " .. tostring(err)
-            .. " (retry in " .. discovery_backoff_ms .. "ms)")
-        -- If the Zap was rebooted the serial may have rotated (unlikely
-        -- on real hardware but possible on dev gateways). Force re-discovery
-        -- on persistent failure.
-        if discovery_backoff_ms >= DISCOVERY_BACKOFF_MAX then
-            host.log("warn", "Zap: repeated failures — will re-discover devices")
+        p1_fail_count = p1_fail_count + 1
+        host.log("warn", "Zap: P1 data fetch failed (" .. p1_fail_count
+            .. "/" .. P1_FAIL_REDISCOVER .. "): " .. tostring(err))
+        if p1_fail_count >= P1_FAIL_REDISCOVER then
+            host.log("warn", "Zap: repeated P1 failures — will re-discover devices")
             p1_serial = nil
             pv_serials = {}
+            discovered = false
+            p1_fail_count = 0
         end
         return 1000
     end
     if not data.meter then
-        bump_backoff()
+        p1_fail_count = p1_fail_count + 1
         host.log("warn", "Zap: P1 payload missing `meter` block")
         return 1000
     end
-    clear_backoff()
+    p1_fail_count = 0
 
     local m = data.meter
     local meter = {
@@ -348,5 +364,7 @@ end
 function driver_cleanup()
     p1_serial = nil
     pv_serials = {}
+    discovered = false
+    p1_fail_count = 0
     clear_backoff()
 end
