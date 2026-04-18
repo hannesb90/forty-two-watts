@@ -9,5 +9,5 @@ import "./ftw-modal.js";
 import "./ftw-progress-bar.js";
 import "./ftw-badge.js";
 import "./ftw-card.js";
-// import "./ftw-tabs.js";
+import "./ftw-tabs.js";
 // import "./ftw-legend.js";
