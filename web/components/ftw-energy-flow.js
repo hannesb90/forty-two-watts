@@ -364,8 +364,8 @@ class FtwEnergyFlow extends FtwElement {
     // grown so the bigger house icon + bigger load value + CONSUMING
     // label stop crowding each other the way they did at HUB_R=64 with
     // compact fonts.
-    const nodeR       = 82;
-    const hubR        = this._compact ? 90       : HUB_R;
+    const nodeR       = 86;
+    const hubR        = this._compact ? 95       : HUB_R;
     const hubIconY    = this._compact ? CY - 49  : CY - 30;
     const hubValueY   = this._compact ? CY + 4   : CY + 16;
     const hubLabelY   = this._compact ? CY + 34  : CY + 32;
@@ -481,10 +481,7 @@ class FtwEnergyFlow extends FtwElement {
       nodeFn({
         pos: batPositions[i],
         value: bat.placeholder ? "—" : fmtKw(bat.kw),
-        title: labelWithName(
-          "BATTERY", bat.name, batList.length,
-          bat.soc != null && !bat.placeholder ? ` · ${Math.round(bat.soc)}%` : "",
-        ),
+        title: labelWithName("BATTERY", bat.name, batList.length),
         sub: bat.placeholder ? "no data" :
              (Math.abs(bat.kw) < 0.05 ? "idle" :
               (bat.kw >= 0 ? "charging" : "discharging")),
@@ -809,17 +806,19 @@ function hashStr(s) {
 
 // Circular node for the compact × layout. Text is centered and
 // respread for a disk: title near the top, value at the middle, sub
-// below the middle, SoC bar at the bottom. Stroke is the accent color
-// so each node carries its identity on the edge of the circle — no
-// separate stripe needed the way rectangular boxes have.
+// below the middle, and — for batteries — a SoC reading as a fourth
+// line below sub. The older horizontal SoC bar ran through the same
+// baseline as "discharging" which made them hard to read together;
+// a plain text line reads cleaner at this radius. Stroke is the
+// accent color so each node carries its identity on the edge of the
+// circle — no separate stripe needed the way rectangular boxes have.
 function renderCircleNode({ pos, title, value, sub, color, soc, radius = 82 }) {
   const r = radius;
   const { x, y } = pos;
-  const socBar = soc != null ? `
-    <rect x="${x - 32}" y="${y + r - 26}" width="64" height="3" rx="1.5"
-          fill="var(--hero-soc-track)"/>
-    <rect x="${x - 32}" y="${y + r - 26}" width="${(64 * (soc / 100)).toFixed(1)}" height="3" rx="1.5"
-          fill="var(--cyan)"/>` : "";
+  const socText = soc != null
+    ? `<text x="${x}" y="${y + 60}" text-anchor="middle"
+             fill="var(--cyan)" class="sv-node-sub">SoC ${Math.round(soc)}%</text>`
+    : "";
   return `
     <g>
       <circle cx="${x}" cy="${y}" r="${r}"
@@ -835,7 +834,7 @@ function renderCircleNode({ pos, title, value, sub, color, soc, radius = 82 }) {
             fill="var(--hero-sub-text)" class="sv-node-sub">
         ${escapeXml(sub)}
       </text>
-      ${socBar}
+      ${socText}
     </g>`;
 }
 
