@@ -56,7 +56,7 @@ class FtwEnergyFlow extends FtwElement {
         var(--hero-bg-bot) 100%);
       border: 1px solid var(--line);
       border-radius: var(--radius-lg);
-      padding: 20px 28px 14px;
+      padding: 14px 28px 6px;
       position: relative;
       overflow: hidden;
     }
@@ -70,12 +70,14 @@ class FtwEnergyFlow extends FtwElement {
     }
     .title {
       font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 500;
-      letter-spacing: 0.18em;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.22em;
       text-transform: uppercase;
-      color: var(--fg-muted);
-      margin-bottom: 10px;
+      color: var(--fg);
+      text-align: center;
+      padding: 2px 0;
+      margin-bottom: 2px;
       position: relative;
     }
     svg {
@@ -104,7 +106,7 @@ class FtwEnergyFlow extends FtwElement {
       animation: ef-spin 24s linear infinite;
     }
     @media (max-width: 900px) {
-      :host { padding: 14px 12px 10px; }
+      :host { padding: 10px 12px 4px; }
       svg { height: 465px; }
       .sv-node-title { font-size: 13px; }
       .sv-node-value { font-size: 24px; }
