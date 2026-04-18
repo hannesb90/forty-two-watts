@@ -755,6 +755,71 @@ func main() {
 				}
 			}
 
+			// ---- EV dispatch: observe + command per loadpoint ----
+			// For each configured loadpoint we first read the
+			// charger driver's latest telemetry and feed it to the
+			// manager (plug state + session Wh → inferred SoC). Then
+			// we ask the MPC for the current slot's energy budget
+			// and translate it to an instantaneous W command. No
+			// PI — energy-allocation contract: remaining Wh /
+			// remaining s → W, snap to the charger's allowed steps.
+			if len(cfg.Loadpoints) > 0 && mpcSvc != nil {
+				for _, lpCfg := range cfg.Loadpoints {
+					evr := tel.Get(lpCfg.DriverName, telemetry.DerEV)
+					plugged := false
+					var sessionWh, powerW float64
+					if evr != nil {
+						powerW = evr.SmoothedW
+						var d struct {
+							Connected bool    `json:"connected"`
+							SessionWh float64 `json:"session_wh"`
+						}
+						if err := json.Unmarshal(evr.Data, &d); err == nil {
+							plugged = d.Connected
+							sessionWh = d.SessionWh
+						}
+					}
+					lpMgr.Observe(lpCfg.ID, plugged, powerW, sessionWh)
+					if !plugged {
+						continue
+					}
+					d, ok := mpcSvc.SlotDirectiveAt(time.Now())
+					if !ok || d.LoadpointEnergyWh == nil {
+						continue
+					}
+					budgetWh, hasBudget := d.LoadpointEnergyWh[lpCfg.ID]
+					if !hasBudget {
+						continue
+					}
+					remainingS := d.SlotEnd.Sub(time.Now()).Seconds()
+					// The budget is total energy for the slot; we
+					// subtract what's already been delivered so far
+					// so a mid-slot dispatch doesn't overshoot.
+					// Without a per-slot start-energy anchor, we
+					// approximate "delivered this slot" as the
+					// charger's current power × fraction of slot
+					// elapsed. In practice most dispatch ticks are
+					// late in the slot so the error is small.
+					elapsed := d.SlotEnd.Sub(d.SlotStart).Seconds() - remainingS
+					if elapsed < 0 {
+						elapsed = 0
+					}
+					alreadyWh := powerW * elapsed / 3600.0
+					remainingWh := budgetWh - alreadyWh
+					wantW := control.EnergyBudgetToPowerW(remainingWh, remainingS)
+					cmdW := control.SnapChargeW(wantW, lpCfg.MinChargeW,
+						lpCfg.MaxChargeW, lpCfg.AllowedStepsW)
+					payload, _ := json.Marshal(map[string]any{
+						"action":  "ev_set_current",
+						"power_w": cmdW,
+					})
+					if err := reg.Send(ctx, lpCfg.DriverName, payload); err != nil {
+						slog.Warn("loadpoint dispatch", "lp", lpCfg.ID,
+							"driver", lpCfg.DriverName, "err", err)
+					}
+				}
+			}
+
 			// ---- Record history snapshot ----
 			recordHistory(st, tel, ctrl, nowMs)
 

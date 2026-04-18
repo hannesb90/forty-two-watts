@@ -261,8 +261,31 @@ and terminal credit.
 consumes carries `LoadpointEnergyWh[id]` and `LoadpointSoCTargetPct[id]`
 for the dispatch layer.
 
-### What's not yet wired
+### Dispatch
 
-- Driver-side charger capability (`ChargerCap`) — coming in Phase 4.1
+Per control tick (5 s) the main loop:
+
+1. Reads each loadpoint's driver telemetry (`tel.Get(driver, DerEV)` →
+   `{connected, session_wh}`).
+2. Calls `lpMgr.Observe(id, connected, powerW, sessionWh)`. The
+   manager infers vehicle SoC as `plugin_soc_pct + session_wh /
+   vehicle_capacity * 100` (chargers like Easee don't expose the
+   BMS).
+3. Fetches `SlotDirectiveAt(now).LoadpointEnergyWh[id]` from the
+   MPC.
+4. Computes `remainingWh / remainingSeconds → W` (same
+   energy-allocation contract as the battery), snaps to
+   `AllowedStepsW`, and sends
+   `{"action":"ev_set_current","power_w": W}` to the loadpoint's
+   driver.
+
+The Easee driver divides `power_w` by configured phases,
+clamps to 6-32 A, and sets `dynamicChargerCurrent` via the cloud
+API. 0 W cleanly pauses the session.
+
+### What's still outstanding
+
 - Per-loadpoint divergence check for reactive replan
 - UI for setting target + target-time (API is ready; web-form follows)
+- Phase-switching heuristic inside the Easee driver for sub-3 kW
+  surplus windows

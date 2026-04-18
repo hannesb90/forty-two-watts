@@ -40,6 +40,13 @@ type Config struct {
 	// validate target-SoC feasibility given a deadline). 0 falls
 	// back to a typical 60 kWh assumption.
 	VehicleCapacityWh float64 `yaml:"vehicle_capacity_wh,omitempty" json:"vehicle_capacity_wh,omitempty"`
+
+	// Assumed EV SoC % at plug-in. Chargers like Easee don't report
+	// the vehicle's SoC directly — only cumulative session energy.
+	// Current SoC is then estimated as `PluginSoCPct + delivered / cap`.
+	// 0 defaults to 20 % (conservative). Operators who care can
+	// override per-loadpoint or pre-plug-in.
+	PluginSoCPct float64 `yaml:"plugin_soc_pct,omitempty" json:"plugin_soc_pct,omitempty"`
 }
 
 // State is the observable snapshot of one loadpoint at a point in time.
@@ -82,6 +89,13 @@ type loadpointRuntime struct {
 	targetSoCPct       float64
 	targetTime         time.Time
 	updatedAtMs        int64
+
+	// Plug-in anchor: the SoC we believe the vehicle was at when
+	// this session began. Persisted across Observe() calls so SoC
+	// inference (pluginSoC + deliveredWh/capacity) stays stable
+	// even as session_wh grows. Reset to Config.PluginSoCPct on
+	// every plug-in transition (prev !pluggedIn → now pluggedIn).
+	sessionPluginSoCPct float64
 }
 
 // NewManager returns an empty manager. Configure with Load().
@@ -154,22 +168,63 @@ func (m *Manager) States() []State {
 	return out
 }
 
-// Observe updates the measurement side of a loadpoint. Called by the
-// driver layer once per poll cycle (phase 4 wiring). No-op for
-// unknown IDs — a misconfigured driver shouldn't crash the manager.
-func (m *Manager) Observe(id string, pluggedIn bool, socPct, powerW,
-	deliveredWh float64) {
+// Observe updates the measurement side of a loadpoint from raw driver
+// telemetry. The manager derives current SoC internally from the
+// session's plug-in anchor + delivered energy (chargers like Easee
+// don't report the vehicle's actual SoC).
+//
+// Plug-in transitions (prev !pluggedIn → now pluggedIn) reset the
+// session anchor to Config.PluginSoCPct (default 20 %) so the
+// inference is stable across plug cycles even if the underlying
+// charger's session counter wraps or resets.
+//
+// No-op for unknown IDs — a misconfigured driver shouldn't crash the
+// manager.
+func (m *Manager) Observe(id string, pluggedIn bool, powerW, deliveredWh float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	lp, ok := m.byID[id]
 	if !ok {
 		return
 	}
+	if pluggedIn && !lp.pluggedIn {
+		// Plug-in transition: seed the session anchor.
+		anchor := lp.PluginSoCPct
+		if anchor <= 0 {
+			anchor = 20 // conservative default
+		}
+		lp.sessionPluginSoCPct = anchor
+	}
 	lp.pluggedIn = pluggedIn
-	lp.currentSoCPct = socPct
 	lp.currentPowerW = powerW
 	lp.deliveredWhSession = deliveredWh
+	if pluggedIn {
+		lp.currentSoCPct = estimateSoCPct(lp.sessionPluginSoCPct,
+			deliveredWh, lp.VehicleCapacityWh)
+	} else {
+		lp.currentSoCPct = 0
+	}
 	lp.updatedAtMs = time.Now().UnixMilli()
+}
+
+// estimateSoCPct returns the vehicle SoC % inferred from the session
+// anchor + energy delivered. Chargers like Easee don't expose the
+// car's BMS; this is the best-effort estimate the MPC uses.
+//
+// Clamps to [0, 100]. Falls back to the anchor when capacity is
+// unknown (can't translate Wh → %).
+func estimateSoCPct(pluginSoCPct, deliveredWh, capacityWh float64) float64 {
+	if capacityWh <= 0 {
+		return pluginSoCPct
+	}
+	soc := pluginSoCPct + deliveredWh/capacityWh*100.0
+	if soc < 0 {
+		return 0
+	}
+	if soc > 100 {
+		return 100
+	}
+	return soc
 }
 
 // SetTarget updates the user-intent fields for an existing loadpoint.
