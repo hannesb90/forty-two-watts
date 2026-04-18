@@ -23,7 +23,8 @@
     <div class="header-right">
       <button id="ui-mode-toggle" class="btn-link" title="Show advanced controls + diagnostics">Advanced</button>
       <button id="settings-btn" class="settings-btn" title="Settings">⚙</button>
-      <span id="version" class="version">...</span>
+      <ftw-update-badge></ftw-update-badge>
+      <span id="version" class="version" title="Click for version info" style="cursor:pointer">...</span>
       <span id="conn-status" class="conn-status connected" title="Connected">&#9679;</span>
     </div>
   </header>
@@ -339,6 +340,20 @@
   <script src="/plan.js?v=diag1"></script>
   <script src="/twins.js?v=diag1"></script>
   <script src="/diagnose.js?v=diag1"></script>
+  <script src="/update-badge.js?v=diag1" defer></script>
+  <script>
+    // Bridge: clicking the plain-text version span opens the update modal
+    // (the <ftw-update-badge> dot is tiny and easy to miss). Kept inline so
+    // app.js stays untouched by the self-update feature.
+    document.addEventListener("DOMContentLoaded", function () {
+      var v = document.getElementById("version");
+      if (!v) return;
+      v.addEventListener("click", function () {
+        var badge = document.querySelector("ftw-update-badge");
+        if (badge && typeof badge.open === "function") badge.open();
+      });
+    });
+  </script>
   <script>
     <!-- Status bar — always visible at bottom -->
     <footer class="status-bar" id="status-bar">

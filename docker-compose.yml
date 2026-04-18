@@ -15,6 +15,13 @@
 # scripts/install.sh), run:
 #
 #   mkdir -p ./data && sudo chown -R 100:101 ./data
+#
+# In-app updates: the `ftw-updater` sidecar below is what the "Update" /
+# "Restart" buttons in the web UI signal to pull a new image + recreate
+# the main service. See docs/self-update.md. Remove the sidecar service
+# (and the update-ipc volume) if you prefer to run upgrades by hand —
+# the UI buttons will surface a 503 and the version-check banner keeps
+# working as a notify-only indicator.
 
 services:
   forty-two-watts:
@@ -34,3 +41,44 @@ services:
 
     volumes:
       - ./data:/app/data
+      # Shared tmpfs with the updater — the main app reads state.json from
+      # here to render update progress in the UI; it never writes to it.
+      - update-ipc:/run/ftw-update
+
+  ftw-updater:
+    image: ghcr.io/frahlg/forty-two-watts-updater:latest
+    container_name: ftw-updater
+    restart: unless-stopped
+
+    # No network — the sidecar reaches the host daemon over its Unix
+    # socket and the main app reaches it over a Unix socket inside
+    # update-ipc. Nothing needs to leave this container.
+    network_mode: none
+
+    environment:
+      # The sidecar runs `docker compose -f /compose/docker-compose.yml`
+      # internally; without this hint compose would derive its project
+      # name from `/compose` (the mount point) and create a parallel
+      # set of containers/volumes instead of recreating the real ones.
+      # Defaults to `forty-two-watts` (the repo dir name + the layout
+      # shown in operations.md); override at launch time if you deploy
+      # to a differently-named directory:
+      #   COMPOSE_PROJECT_NAME=myhome docker compose up -d
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-forty-two-watts}
+
+    volumes:
+      # The Docker socket is the ONE privileged resource the sidecar
+      # touches. Needed so it can `docker compose pull` + recreate the
+      # main service. If you want to harden this further, put
+      # tecnativa/docker-socket-proxy in front and swap the bind.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Read-only bind of this compose file so the sidecar can
+      # `docker compose -f /compose/docker-compose.yml pull forty-two-watts`.
+      - ./docker-compose.yml:/compose/docker-compose.yml:ro
+      # Shared with the main container so the update status survives the
+      # main app being recreated (tmpfs contents outlive the container
+      # lifecycle of individual services that mount the same volume).
+      - update-ipc:/run/ftw-update
+
+volumes:
+  update-ipc:
