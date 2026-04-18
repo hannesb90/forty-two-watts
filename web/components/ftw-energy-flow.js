@@ -347,11 +347,16 @@ class FtwEnergyFlow extends FtwElement {
     // Compact mode pulls the four cardinal anchors toward the hub so the
     // beams are roughly half-length — leaves the box cluster tight and
     // gives the enlarged text on narrow viewports room to breathe
-    // without overflowing the viewBox.
+    // without overflowing the viewBox. We also crop the viewBox to the
+    // middle 600 units (instead of the full 1000) so the remaining
+    // content renders ~1.67× larger at the same container width — a
+    // uniform zoom across boxes, icons, beams, and text.
     const topY    = this._compact ? 110      : TOP_Y;
     const botY    = this._compact ? H - 110  : BOT_Y;
-    const leftX   = this._compact ? 230      : LEFT_X;
-    const rightX  = this._compact ? W - 230  : RIGHT_X;
+    const leftX   = this._compact ? 290      : LEFT_X;
+    const rightX  = this._compact ? W - 290  : RIGHT_X;
+    const vbX     = this._compact ? 200      : 0;
+    const vbW     = this._compact ? 600      : W;
 
     const pvPositions  = clusterH(pvList.length,  CX,      topY,  BOX_W, GAP_H);
     const batPositions = clusterV(batList.length, rightX,  CY,    BOX_H, GAP_V);
@@ -470,7 +475,7 @@ class FtwEnergyFlow extends FtwElement {
           <span><i style="background:var(--cyan)"></i>Battery</span>
         </div>
       </div>
-      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      <svg viewBox="${vbX} 0 ${vbW} ${H}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
         <defs>
           <radialGradient id="ef-hub" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stop-color="oklch(0.85 0.18 var(--accent-hue))" stop-opacity="0.55"/>
