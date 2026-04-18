@@ -6,7 +6,7 @@
 import "./ftw-element.js";
 // Foundations — registered as each lands.
 import "./ftw-modal.js";
-// import "./ftw-progress-bar.js";
+import "./ftw-progress-bar.js";
 // import "./ftw-badge.js";
 // import "./ftw-card.js";
 // import "./ftw-tabs.js";
