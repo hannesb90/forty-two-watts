@@ -58,7 +58,7 @@ The tmpfs volume outlives the recreate of either container, so the new
 main container reads `done` on startup and serves it to the UI that's
 still polling in the browser — which then hard-reloads.
 
-## The five endpoints
+## The six endpoints
 
 | Endpoint | Purpose |
 |---|---|

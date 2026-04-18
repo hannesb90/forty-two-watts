@@ -51,10 +51,17 @@
     _refresh(force) {
       const url = force ? "/api/version/check?force=1" : "/api/version/check";
       fetch(url)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((info) => {
-          if (info && typeof info === "object") {
-            this._info = info;
+        .then((r) =>
+          r.json()
+            .then((body) => ({ ok: r.ok, body }))
+            .catch(() => ({ ok: r.ok, body: null }))
+        )
+        .then(({ ok, body }) => {
+          // The handler returns the full Info schema on both success and the
+          // force=1 error path, so we render either way. When ok=false, body.err
+          // carries the reason and the UI shows "Last check failed: …".
+          if (body && typeof body === "object") {
+            this._info = body;
             this._render();
           }
         })
@@ -192,8 +199,9 @@
             <button class="btn" data-action="restart">Restart (test)</button>
           `;
 
-      const notes = hasUpdate && info.release_notes_url
-        ? `<a class="notes" href="${escapeHTML(info.release_notes_url)}" target="_blank" rel="noopener">Release notes ↗</a>`
+      const notesHref = safeHref(info.release_notes_url);
+      const notes = hasUpdate && notesHref
+        ? `<a class="notes" href="${escapeHTML(notesHref)}" target="_blank" rel="noopener">Release notes ↗</a>`
         : "";
 
       return `
@@ -401,6 +409,19 @@
       case "failed":     return "Failed";
       default:           return action === "restart" ? "Restarting" : "Starting update";
     }
+  }
+
+  // safeHref rejects anything that isn't http:/https:. The release-notes URL
+  // comes from the GitHub Releases API, but we belt-and-brace here: an
+  // attacker who somehow lands a javascript:/data: URL into the payload
+  // shouldn't get code execution via the anchor href.
+  function safeHref(u) {
+    if (!u) return "";
+    try {
+      const p = new URL(String(u), window.location.href);
+      if (p.protocol === "http:" || p.protocol === "https:") return p.toString();
+    } catch (_) { /* fall through */ }
+    return "";
   }
 
   function escapeHTML(s) {

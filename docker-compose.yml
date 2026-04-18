@@ -20,8 +20,8 @@
 # "Restart" buttons in the web UI signal to pull a new image + recreate
 # the main service. See docs/self-update.md. Remove the sidecar service
 # (and the update-ipc volume) if you prefer to run upgrades by hand —
-# the UI buttons will surface a 503 and the version-check banner keeps
-# working as a notify-only indicator.
+# the UI buttons will surface a non-2xx error (typically 502) and the
+# version-check banner keeps working as a notify-only indicator.
 
 services:
   forty-two-watts:

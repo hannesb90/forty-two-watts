@@ -285,13 +285,14 @@ func (s *server) readState() State {
 func (s *server) recoverCrashedState() {
 	st := s.readState()
 	if (st.State == "pulling" || st.State == "restarting") && time.Since(st.UpdatedAt) > 5*time.Minute {
+		prev := st.State
 		st.State = "failed"
 		if st.Message == "" {
 			st.Message = "updater process restarted while in-flight"
 		}
 		st.UpdatedAt = time.Now()
 		s.writeState(st)
-		slog.Warn("recovered in-flight state as failed", "prev_state", st.State)
+		slog.Warn("recovered in-flight state as failed", "prev_state", prev)
 	}
 }
 

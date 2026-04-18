@@ -4,8 +4,8 @@ import (
 	"net/http"
 )
 
-// handleVersionCheck returns the cached self-update state. ?force=1 forces a
-// GitHub probe (bypasses the 3h cache). All fields in selfupdate.Info are
+// handleVersionCheck returns the cached self-update state. ?force=1 bypasses
+// the cache and contacts GitHub directly. All fields in selfupdate.Info are
 // passed through verbatim so the UI does the rendering.
 func (s *Server) handleVersionCheck(w http.ResponseWriter, r *http.Request) {
 	if s.deps.SelfUpdate == nil {
@@ -16,15 +16,10 @@ func (s *Server) handleVersionCheck(w http.ResponseWriter, r *http.Request) {
 	if force {
 		info, err := s.deps.SelfUpdate.Check(r.Context(), true)
 		if err != nil {
-			// Expose the error but still return the cached view so the UI
-			// keeps showing the last-known latest rather than going blank.
-			writeJSON(w, 502, map[string]any{
-				"error":           err.Error(),
-				"current":         info.Current,
-				"latest":          info.Latest,
-				"update_available": info.UpdateAvailable,
-				"skipped":         info.Skipped,
-			})
+			// Return the full Info schema with Err populated so the UI has
+			// one shape to handle (not a special error envelope).
+			info.Err = err.Error()
+			writeJSON(w, 502, info)
 			return
 		}
 	}

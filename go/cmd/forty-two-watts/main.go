@@ -1163,9 +1163,12 @@ func recordHistory(st *state.Store, tel *telemetry.Store, ctrl *control.State, n
 	}
 }
 
-// envOr returns os.Getenv(key) if set + non-empty, otherwise def.
+// envOr returns the env var's value if it is set (even if empty, so an
+// operator can explicitly blank a path to disable a feature — see
+// docs/self-update.md on FTW_UPDATER_SOCKET=""). Returns def only when
+// the variable is unset.
 func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
+	if v, ok := os.LookupEnv(key); ok {
 		return v
 	}
 	return def
