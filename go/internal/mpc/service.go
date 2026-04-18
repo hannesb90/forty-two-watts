@@ -83,8 +83,10 @@ type Service struct {
 
 	Defaults Params
 
-	mu   sync.RWMutex
-	last *Plan
+	mu         sync.RWMutex
+	last       *Plan
+	lastSlots  []Slot  // inputs that went into the most recent Optimize call
+	lastParams Params  // params that went into the most recent Optimize call
 
 	stop chan struct{}
 	done chan struct{}
@@ -501,6 +503,8 @@ func (s *Service) replan(_ context.Context) *Plan {
 
 	s.mu.Lock()
 	s.last = &plan
+	s.lastSlots = slots
+	s.lastParams = p
 	s.lastReplanAt = time.Now()
 	reason := s.lastReason
 	if reason == "" {
@@ -561,7 +565,7 @@ func extendPricesWithForecast(prices []state.PricePoint, zone string, pricer Pri
 	mod := start % (int64(slotLen) * 60 * 1000)
 	start -= mod
 	for ts := start; ts < untilMs; ts += int64(slotLen) * 60 * 1000 {
-		t := time.UnixMilli(ts)
+		t := time.UnixMilli(ts).UTC()
 		spot := pricer(zone, t)
 		total := (spot + gridTariff) * (1 + vatPct/100.0)
 		prices = append(prices, state.PricePoint{
@@ -597,7 +601,7 @@ func buildSlots(prices []state.PricePoint, forecasts []state.ForecastPoint, base
 		if slotEnd <= nowMs {
 			continue // past slot
 		}
-		slotT := time.UnixMilli(pr.SlotTsMs)
+		slotT := time.UnixMilli(pr.SlotTsMs).UTC()
 		var pvW float64
 		forecastPVW := lookupPV(forecasts, pr.SlotTsMs)
 		if pv != nil {
