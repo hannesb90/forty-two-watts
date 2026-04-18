@@ -40,6 +40,7 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/prices"
 	"github.com/frahlg/forty-two-watts/go/internal/pvmodel"
 	"github.com/frahlg/forty-two-watts/go/internal/selftune"
+	"github.com/frahlg/forty-two-watts/go/internal/selfupdate"
 	"github.com/frahlg/forty-two-watts/go/internal/state"
 	"github.com/frahlg/forty-two-watts/go/internal/telemetry"
 )
@@ -542,6 +543,18 @@ func main() {
 			"pvtwin", pvSvc != nil)
 	}
 
+	// ---- Self-update checker ----
+	// Probes the GitHub Releases API in the background; the UI reads the
+	// cached result via /api/version/check. Socket/status paths default to
+	// the sidecar layout defined in docker-compose.yml — empty on bare-metal
+	// runs, which disables Trigger/Status gracefully.
+	selfUpdater := selfupdate.New(selfupdate.Config{
+		CurrentVersion: Version,
+		SocketPath:     envOr("FTW_UPDATER_SOCKET", "/run/ftw-update/sock"),
+		StatusPath:     envOr("FTW_UPDATER_STATUS", "/run/ftw-update/state.json"),
+	}, st)
+	selfUpdater.Start(ctx)
+
 	// ---- Start HTTP API ----
 	// Forward-declare haBridge so Deps can reference it; the bridge
 	// gets wired further down (HA is optional + depends on reg.Names()).
@@ -566,6 +579,7 @@ func main() {
 		Loadpoints: lpMgr,
 		HA:         haBridge,
 		Registry:   reg,
+		SelfUpdate: selfUpdater,
 		Version:    Version,
 	}
 	srv := api.New(deps)
@@ -1147,4 +1161,15 @@ func recordHistory(st *state.Store, tel *telemetry.Store, ctrl *control.State, n
 	}); err != nil {
 		slog.Warn("failed to persist history point", "err", err)
 	}
+}
+
+// envOr returns the env var's value if it is set (even if empty, so an
+// operator can explicitly blank a path to disable a feature — see
+// docs/self-update.md on FTW_UPDATER_SOCKET=""). Returns def only when
+// the variable is unset.
+func envOr(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	return def
 }

@@ -34,6 +34,7 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/pvmodel"
 	"github.com/frahlg/forty-two-watts/go/internal/scanner"
 	"github.com/frahlg/forty-two-watts/go/internal/selftune"
+	"github.com/frahlg/forty-two-watts/go/internal/selfupdate"
 	"github.com/frahlg/forty-two-watts/go/internal/state"
 	"github.com/frahlg/forty-two-watts/go/internal/telemetry"
 )
@@ -92,6 +93,10 @@ type Deps struct {
 	// Driver registry — used by lifecycle endpoints (restart/disable/enable)
 	// and EV command dispatch. Nil disables those endpoints (returns 503).
 	Registry *drivers.Registry
+
+	// Optional: background version-check + updater-sidecar dispatch.
+	// Nil disables every /api/version/* endpoint (returns 503).
+	SelfUpdate *selfupdate.Checker
 
 	Version string
 }
@@ -162,6 +167,12 @@ func (s *Server) routes() {
 	s.handle("POST /api/ev/chargers", s.handleEVChargers)
 	s.handle("GET  /api/loadpoints", s.handleLoadpoints)
 	s.handle("POST /api/loadpoints/{id}/target", s.handleLoadpointTarget)
+	s.handle("GET  /api/version/check", s.handleVersionCheck)
+	s.handle("POST /api/version/skip", s.handleVersionSkip)
+	s.handle("POST /api/version/unskip", s.handleVersionUnskip)
+	s.handle("POST /api/version/update", s.handleVersionUpdate)
+	s.handle("POST /api/version/restart", s.handleVersionRestart)
+	s.handle("GET  /api/version/update/status", s.handleVersionUpdateStatus)
 
 	// ---- Static web UI ----
 	// Everything not matched above falls through to the static server.
