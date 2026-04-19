@@ -61,14 +61,19 @@ body.ftw-next main {
 }
 
 /* ---- Header — rounded pill with backdrop blur.
-       Horizontal padding matches main (28 px) so the pill's content
-       edges align with the cards below it — no "inset" look on wide
-       screens. Outer margin is 28 px left/right inside the 1560 px
-       max-width so the pill itself sits within the same rectangle as
-       main's padding box. ---- */
+       Outer rectangle lines up with main's CONTENT box (not main's
+       outer box): width caps at 1560 − 2×28 = 1504 px on wide screens,
+       and `width: calc(100% - 56px)` keeps it 28 px inside the viewport
+       on narrower ones — so the pill's visible border sits in the same
+       column as the cards inside main's 28 px gutter. Without this the
+       pill's border hugged the viewport edges while the cards sat 28 px
+       in, producing the "header goes 100% wide when body doesn't" look.
+       Interior padding (12 × 28) then positions logo / tabs / actions
+       a further 28 px in — same as an additional card's padding. ---- */
 body.ftw-next > header {
   box-sizing: border-box;
-  max-width: 1560px;
+  width: calc(100% - 56px);
+  max-width: 1504px;
   margin: 20px auto 20px;
   padding: 12px 28px;
   border: 1px solid var(--line);
@@ -574,12 +579,11 @@ body.ftw-next .diagnose-detail {
     padding: 0 12px 48px;
     gap: 12px;
   }
-  /* Horizontal margin is `auto` so the header's outer rectangle lines
-     up with main's outer rectangle; combined with 12 px padding this
-     puts header content at the same 12 px inset as main's cards.
-     Previous `margin: 10px 12px 14px` stacked a 12 px gutter + 12 px
-     padding (24 px inset) that visibly drifted from the grid below. */
+  /* Same rail alignment as desktop, but with the mobile 12 px gutter:
+     header's outer border sits 12 px inside the viewport, matching
+     main's 12 px content inset. */
   body.ftw-next > header {
+    width: calc(100% - 24px);
     margin: 10px auto 14px;
     grid-template-columns: auto 1fr auto;
     gap: 10px;
@@ -589,6 +593,7 @@ body.ftw-next .diagnose-detail {
   body.ftw-next > header h1 { font-size: 15px; }
   body.ftw-next > header .header-logo { height: 26px; }
   body.ftw-next footer {
+    width: calc(100% - 24px);
     margin: 10px auto 0;
     padding: 10px 12px;
   }
