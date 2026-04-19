@@ -246,7 +246,16 @@
     var port = parseInt(document.getElementById('drv-port').value, 10);
     var unitId = parseInt(document.getElementById('drv-unitid').value, 10) || 1;
     var isSiteMeter = document.getElementById('drv-site-meter').checked;
-    var batteryKwh = parseFloat(document.getElementById('drv-battery-kwh').value) || 0;
+    // Only read battery capacity for drivers that actually support it —
+    // the <input> has a default value of 10, so without this gate a
+    // PV-only driver (e.g. solaredge_pv) would persist a phantom
+    // battery_capacity_wh = 10000 that the control loop later tries to
+    // target against a device with no battery.
+    var hasBattery = selectedCatalog && selectedCatalog.capabilities &&
+      selectedCatalog.capabilities.some(function (c) { return c === 'battery'; });
+    var batteryKwh = hasBattery
+      ? (parseFloat(document.getElementById('drv-battery-kwh').value) || 0)
+      : 0;
 
     if (!ip) { alert('IP address is required.'); return; }
 
