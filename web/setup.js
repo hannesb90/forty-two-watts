@@ -246,7 +246,16 @@
     var port = parseInt(document.getElementById('drv-port').value, 10);
     var unitId = parseInt(document.getElementById('drv-unitid').value, 10) || 1;
     var isSiteMeter = document.getElementById('drv-site-meter').checked;
-    var batteryKwh = parseFloat(document.getElementById('drv-battery-kwh').value) || 0;
+    // Only read battery capacity for drivers that actually support it —
+    // the <input> has a default value of 10, so without this gate a
+    // PV-only driver (e.g. solaredge_pv) would persist a phantom
+    // battery_capacity_wh = 10000 that the control loop later tries to
+    // target against a device with no battery.
+    var hasBattery = selectedCatalog && selectedCatalog.capabilities &&
+      selectedCatalog.capabilities.some(function (c) { return c === 'battery'; });
+    var batteryKwh = hasBattery
+      ? (parseFloat(document.getElementById('drv-battery-kwh').value) || 0)
+      : 0;
 
     if (!ip) { alert('IP address is required.'); return; }
 
@@ -382,6 +391,67 @@
     }
   }
 
+  // Populate the <select id="ev-serial"> by calling /api/ev/chargers —
+  // mirrors the settings screen so operators don't have to transcribe a
+  // serial off the side of the charger. The serial field only appears
+  // after a successful call returns at least one device.
+  window.loadEVChargers = function () {
+    var provider = document.getElementById('ev-provider').value || 'easee';
+    var email = document.getElementById('ev-email').value.trim();
+    var password = document.getElementById('ev-password').value;
+    var btn = document.getElementById('ev-load-chargers');
+    var statusEl = document.getElementById('ev-chargers-status');
+    var group = document.getElementById('ev-serial-group');
+    var sel = document.getElementById('ev-serial');
+
+    statusEl.style.display = 'inline';
+    statusEl.style.color = 'var(--text-dim)';
+    if (!email) { statusEl.textContent = 'Enter email first'; return; }
+    if (!password) { statusEl.textContent = 'Enter password first'; return; }
+
+    statusEl.textContent = 'Connecting…';
+    btn.disabled = true;
+
+    fetch('/api/ev/chargers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: provider, email: email, password: password })
+    })
+      .then(function (r) {
+        return r.json().then(function (j) { return { ok: r.ok, body: j }; });
+      })
+      .then(function (res) {
+        if (!res.ok) {
+          statusEl.style.color = 'var(--red)';
+          statusEl.textContent = (res.body && res.body.error) || 'Failed to load chargers';
+          return;
+        }
+        var chargers = Array.isArray(res.body) ? res.body : [];
+        if (chargers.length === 0) {
+          statusEl.textContent = 'No chargers found on this account';
+          group.style.display = 'none';
+          return;
+        }
+        sel.innerHTML = '';
+        chargers.forEach(function (c) {
+          var opt = document.createElement('option');
+          opt.value = c.id;
+          opt.textContent = c.id + (c.name ? '  —  ' + c.name : '');
+          sel.appendChild(opt);
+        });
+        group.style.display = 'block';
+        statusEl.style.color = 'var(--green)';
+        statusEl.textContent = chargers.length + ' charger' + (chargers.length === 1 ? '' : 's') + ' found';
+      })
+      .catch(function (e) {
+        statusEl.style.color = 'var(--red)';
+        statusEl.textContent = 'Error: ' + e.message;
+      })
+      .finally(function () {
+        btn.disabled = false;
+      });
+  };
+
   // --- Step 8: Review ---
 
   function renderReview() {
@@ -446,14 +516,10 @@
   // --- Save config ---
 
   window.saveConfig = function () {
-    if (configuredDrivers.length === 0) {
-      var errEl = document.getElementById('save-error');
-      errEl.className = 'error-msg';
-      errEl.textContent = 'At least one device must be configured.';
-      errEl.style.display = 'block';
-      return;
-    }
-
+    // Empty drivers list is valid — e.g. an EV-only site that only
+    // configured a cloud EV charger in step 7 and doesn't own local
+    // hardware. The backend accepts this and runs with a no-op
+    // control loop (no site meter to balance against).
     var btn = document.getElementById('save-btn');
     btn.disabled = true;
     btn.textContent = 'Saving...';
