@@ -9,9 +9,12 @@
 //   2. If the backend returns 503 (self-update gated off) or a network
 //      error fires, the component stays invisible — setup is never
 //      blocked by the check.
-//   3. If the response says update_available && !skipped, renders a
-//      prominent "Update available" card with current → latest and
-//      Update-now / Continue-anyway buttons.
+//   3. The banner only renders when the response has
+//      update_available && !skipped && sidecar_ready. sidecar_ready
+//      is true exclusively in docker-compose deploys where the
+//      ftw-updater sidecar's Unix socket is reachable; native installs
+//      and dev runs keep the banner hidden so we don't offer an Update
+//      button that can only fail.
 //   4. Update-now posts /api/version/update, opens an <ftw-modal>-based
 //      progress overlay, polls /api/version/update/status, and
 //      cache-busts reloads on `done`. Failure and ~3-minute timeout
@@ -276,8 +279,17 @@ class FtwUpdateCheck extends FtwElement {
   // ---- render ----
   render() {
     const info = this._info;
+    // Banner is only useful when the full pull+restart flow is actionable.
+    // sidecar_ready is true in docker-compose deploys where the ftw-updater
+    // sidecar exposes its Unix socket at the configured SocketPath; native
+    // installs and dev runs leave the socket absent, so we stay invisible
+    // instead of offering an Update button that can only fail.
     const showBanner =
-      !!info && info.update_available && !info.skipped && this._phase === "idle";
+      !!info &&
+      info.update_available &&
+      !info.skipped &&
+      info.sidecar_ready === true &&
+      this._phase === "idle";
 
     // Toggle :host visibility so the element collapses when it has
     // nothing to say — the wizard layout shouldn't reserve space.

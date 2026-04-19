@@ -71,6 +71,13 @@ type Info struct {
 	Skipped         bool      `json:"skipped"`
 	SkippedVersion  string    `json:"skipped_version,omitempty"`
 	Err             string    `json:"err,omitempty"`
+	// SidecarReady is true only when the ftw-updater sidecar's Unix socket
+	// is present at SocketPath — i.e. the full pull+restart flow is wired
+	// up, which in practice means a docker-compose deploy. Native / WSL
+	// dev runs with FTW_SELFUPDATE_ENABLED=1 still report update_available
+	// honestly, but the UI uses this flag to decide whether to offer an
+	// actionable Update button vs just a notify-only indicator.
+	SidecarReady bool `json:"sidecar_ready"`
 }
 
 // UpdateStatus mirrors the sidecar's state.json so handlers can pass it
@@ -216,12 +223,31 @@ func (c *Checker) recordErr(err error) (Info, error) {
 
 // Info returns the cached view. Skip state is re-read from the store on each
 // call so a Skip/Unskip from another request is reflected immediately without
-// broadcasting.
+// broadcasting. SidecarReady is re-probed on every call so a sidecar that
+// came up (or crashed) after boot is reflected without waiting for the next
+// periodic Check.
 func (c *Checker) Info() Info {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.reloadSkipLocked()
-	return c.info
+	info := c.info
+	info.SidecarReady = c.sidecarReadyLocked()
+	return info
+}
+
+// sidecarReadyLocked reports whether the updater socket is present as an
+// actual Unix socket. An empty SocketPath means the feature was never
+// configured for this deploy — docker-compose sets it, native installs
+// typically don't.
+func (c *Checker) sidecarReadyLocked() bool {
+	if c.cfg.SocketPath == "" {
+		return false
+	}
+	fi, err := os.Stat(c.cfg.SocketPath)
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeSocket != 0
 }
 
 func (c *Checker) reloadSkipLocked() {
