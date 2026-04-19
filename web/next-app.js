@@ -267,35 +267,76 @@
     batSoc.textContent = socPct + "%";
     socFill.setAttribute("value", socPct);
 
-    // Hero energy-flow diagram — walk `data.drivers` so multi-PV / multi-
-    // battery rigs render one node per source, stacked. Any driver that
-    // exposes pv_w is treated as a solar producer; any with bat_w is a
-    // battery. setReadings() replaces only the arrays it receives, so a
-    // transient /api/status error preserves the last good cluster.
+    // Hero energy-flow diagram — build a flat "planets" list where each
+    // entry declares which corner it orbits (top-left=PV, top-right=
+    // battery, bottom-left=grid, bottom-right=EV). The component knows
+    // nothing about driver roles — all role→color/sub-text/direction
+    // mapping lives here so the four corners stay a caller concern.
+    // setReadings() replaces `planets` atomically, so a transient
+    // /api/status error preserves the last good layout if we skip it.
     var flowEl = document.getElementById("energy-flow");
     if (flowEl && typeof flowEl.setReadings === "function") {
-      var pvs = [];
-      var batteries = [];
+      var planets = [];
+
+      // Grid — single utility, bottom-left corner. Import = toward house.
+      var gkw = (data.grid_w || 0) / 1000;
+      var gAbs = Math.abs(gkw);
+      planets.push({
+        id: "grid", corner: "bottom-left", title: "GRID",
+        kw: gkw, toHub: gkw >= 0,
+        color: gAbs < 0.05 ? "var(--fg-muted)" :
+               (gkw >= 0 ? "var(--red-e)" : "var(--green-e)"),
+        sub: gAbs < 0.05 ? "balanced" :
+             (gkw >= 0 ? "importing" : "exporting"),
+      });
+
       var drvs = data.drivers || {};
       Object.keys(drvs).forEach(function (name) {
         var d = drvs[name] || {};
+        // Solar — display positive kW when generating (site convention
+        // has pv_w negative for export into the house). All internal
+        // state (chart history, math) stays on site convention; the
+        // sign flip is display-only and lives in this function.
         if (d.pv_w != null) {
-          pvs.push({ name: name, kw: d.pv_w / 1000 });
+          var pvKw = -d.pv_w / 1000;
+          var pvGen = pvKw > 0.05;
+          planets.push({
+            id: "pv-" + name, corner: "top-left", title: "SOLAR", name: name,
+            kw: pvKw, toHub: true,
+            color: pvGen ? "var(--amber)" : "var(--fg-muted)",
+            sub: pvGen ? "generating" : "idle",
+          });
         }
+        // Battery — sign shows charge/discharge. Discharge flows toward
+        // the house; charge flows away from it.
         if (d.bat_w != null) {
-          batteries.push({
-            name: name,
-            kw: d.bat_w / 1000,
+          var bKw = d.bat_w / 1000;
+          var bAbs = Math.abs(bKw);
+          planets.push({
+            id: "bat-" + name, corner: "top-right", title: "BATTERY", name: name,
+            kw: bKw, toHub: bKw < 0,
+            color: "var(--cyan)",
+            sub: bAbs < 0.05 ? "idle" :
+                 (bKw >= 0 ? "charging" : "discharging"),
             soc: d.bat_soc != null ? Math.round(d.bat_soc * 100) : null,
           });
         }
+        // EV — always consumes from the house side.
+        if (d.ev_w != null) {
+          var eKw = d.ev_w / 1000;
+          var eActive = eKw > 0.05;
+          planets.push({
+            id: "ev-" + name, corner: "bottom-right", title: "EV CHARGER", name: name,
+            kw: eKw, toHub: false,
+            color: eActive ? "var(--green-e)" : "var(--white-s)",
+            sub: eActive ? "charging" : "idle",
+          });
+        }
       });
+
       flowEl.setReadings({
-        grid:      (data.grid_w || 0) / 1000,
-        load:      (data.load_w || 0) / 1000,
-        ev:        (data.ev_w   || 0) / 1000,
-        pvs:       pvs,
-        batteries: batteries,
+        load:    (data.load_w || 0) / 1000,
+        planets: planets,
       });
     }
 
