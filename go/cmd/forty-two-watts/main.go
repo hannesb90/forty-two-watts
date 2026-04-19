@@ -595,8 +595,20 @@ func main() {
 	// UI hide the badge.
 	var selfUpdater *selfupdate.Checker
 	if envBool("FTW_SELFUPDATE_ENABLED") {
+		// FTW_SELFUPDATE_CURRENT_VERSION overrides what the checker thinks
+		// it's running so dev / QA can force update_available=true without
+		// rebuilding with a fake -ldflags Version. Scoped to the checker
+		// only — /api/status, User-Agent, HA discovery keep reporting the
+		// real build version. Unset in production; logged loudly when set.
+		current := Version
+		if v, ok := os.LookupEnv("FTW_SELFUPDATE_CURRENT_VERSION"); ok && v != "" {
+			current = v
+			slog.Warn("selfupdate: CurrentVersion overridden for testing",
+				"real_version", Version, "reported_version", current,
+				"env", "FTW_SELFUPDATE_CURRENT_VERSION")
+		}
 		selfUpdater = selfupdate.New(selfupdate.Config{
-			CurrentVersion: Version,
+			CurrentVersion: current,
 			SocketPath:     envOr("FTW_UPDATER_SOCKET", "/run/ftw-update/sock"),
 			StatusPath:     envOr("FTW_UPDATER_STATUS", "/run/ftw-update/state.json"),
 		}, st)
