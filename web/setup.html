@@ -699,10 +699,12 @@
 
 </div>
 
-<!-- Components: registers <ftw-update-check> (pre-setup update banner)
-     and its dependencies. Loaded as a module so imports resolve without
-     a bundle step. -->
-<script type="module" src="/components/index.js"></script>
+<!-- Components: load only <ftw-update-check> (pre-setup update banner)
+     and its transitive deps (ftw-element + ftw-modal). Pulling the full
+     /components/index.js registry here would eagerly import the whole
+     /next dashboard catalogue (ftw-energy-flow etc.) — dead weight on
+     the first setup paint. -->
+<script type="module" src="/components/ftw-update-check.js"></script>
 <script src="/setup.js"></script>
 </body>
 </html>

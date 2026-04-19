@@ -168,6 +168,7 @@ class FtwUpdateCheck extends FtwElement {
     this._phase = "idle";    // idle | updating | timedOut | failed
     this._status = null;     // last /api/version/update/status payload
     this._statusTimer = null;
+    this._pollAbort = null;  // AbortController for in-flight status fetches
     this._updateStartedAt = 0;
     this.classList.add("hidden");
   }
@@ -178,7 +179,7 @@ class FtwUpdateCheck extends FtwElement {
   }
 
   disconnectedCallback() {
-    clearInterval(this._statusTimer);
+    this._stopPolling();
   }
 
   // ---- data ----
@@ -229,34 +230,55 @@ class FtwUpdateCheck extends FtwElement {
   }
 
   _startPolling() {
-    clearInterval(this._statusTimer);
+    this._stopPolling();
+    this._pollAbort = new AbortController();
     this._statusTimer = setInterval(() => this._tick(), STATUS_POLL_MS);
     this._tick();
   }
 
+  // Stops the poll interval AND aborts any in-flight status fetch. Called
+  // from every transition out of "updating" (fail, timeout, cancel, modal
+  // close, disconnect) so a late `state === "done"` response can't hijack
+  // the setup flow with a surprise _reload() after the operator bailed.
+  _stopPolling() {
+    clearInterval(this._statusTimer);
+    this._statusTimer = null;
+    if (this._pollAbort) {
+      this._pollAbort.abort();
+      this._pollAbort = null;
+    }
+  }
+
   _tick() {
-    fetch("/api/version/update/status")
+    const signal = this._pollAbort ? this._pollAbort.signal : undefined;
+    fetch("/api/version/update/status", { signal })
       .then((r) => (r.ok ? r.json() : null))
       .then((st) => {
-        if (!st) return;
+        // Belt-and-braces: if the phase was reset while the fetch was in
+        // flight (cancel button / modal close / timeout), AbortController
+        // should have rejected the promise above — but guard anyway so a
+        // late resolution can never trigger _reload() after bailout.
+        if (!st || this._phase !== "updating") return;
         this._status = st;
         if (st.state === "failed") {
           this._fail(st.message || "Update failed");
           return;
         }
         if (st.state === "done") {
-          clearInterval(this._statusTimer);
+          this._stopPolling();
           // Give the new container a moment to open its listener,
           // then cache-bust reload so stale JS is replaced.
-          setTimeout(() => this._reload(), 800);
+          setTimeout(() => {
+            if (this._phase === "updating") this._reload();
+          }, 800);
         }
         this.update();
       })
-      .catch(() => { /* main container likely mid-restart; keep polling */ });
+      .catch(() => { /* aborted, or main container mid-restart — both fine */ });
 
     if (Date.now() - this._updateStartedAt > UPDATE_SOFT_TIMEOUT_MS) {
-      clearInterval(this._statusTimer);
       if (this._phase === "updating") {
+        this._stopPolling();
         this._phase = "timedOut";
         this.update();
       }
@@ -264,7 +286,7 @@ class FtwUpdateCheck extends FtwElement {
   }
 
   _fail(msg) {
-    clearInterval(this._statusTimer);
+    this._stopPolling();
     this._phase = "failed";
     this._status = { state: "failed", message: msg };
     this.update();
@@ -315,7 +337,7 @@ class FtwUpdateCheck extends FtwElement {
     const cancel = this.shadowRoot.querySelector('[data-action="cancel"]');
     if (cancel) {
       cancel.addEventListener("click", () => {
-        clearInterval(this._statusTimer);
+        this._stopPolling();
         this._phase = "idle";
         this.update();
       });
@@ -332,6 +354,7 @@ class FtwUpdateCheck extends FtwElement {
           return;
         }
         // In failed / timedOut, treat close as "Continue setup".
+        this._stopPolling();
         this._phase = "idle";
         this.update();
       });
