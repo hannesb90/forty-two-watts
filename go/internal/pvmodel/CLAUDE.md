@@ -10,16 +10,24 @@ system-specific forecast for any future slot.
 
 ## Math
 
-Feature vector (`model.go:75-95`, 7 terms, 1st + 2nd time-of-day harmonic):
+Feature vector (`model.go:75-95`, 7 slots, 1st + 2nd time-of-day harmonic):
 
 ```
-x = [ 1,
+x = [ 0,                                       ← dead slot (see below)
       clearsky_w,
       clearsky_w * (1 - cloud/100)^1.5,
       clearsky_w * sin(h),   clearsky_w * cos(h),
       clearsky_w * sin(2h),  clearsky_w * cos(2h) ]
       where h = 2*pi*hour_of_day/24
 ```
+
+Slot 0 is held at 0 on purpose — PV physics pass through the origin
+(no sun → no output), so an RLS intercept has no physical basis. Left
+free, Beta[0] drifted during daytime training and projected phantom
+generation into night slots (issue #133/#134). Kept as a dead slot
+(instead of dropping NFeat to 6) to preserve on-disk Beta persistence;
+Update() also re-zeros Beta[0] each tick so drifted persisted models
+self-heal, and NewService() zeros Beta[0] on load.
 
 RLS update (`model.go:183-217`):
 
@@ -44,6 +52,12 @@ prior = rated * (clearsky/1000) * (1-cloud/100)^1.5
 Output sanity envelope: if `y > 1.05 * rated` → return the physics prior
 instead (`model.go:140-143`). A wild RLS coefficient can't escape into the
 plan.
+
+Predict gate (`model.go:109-117`):
+
+- `clearSkyW < 50` → return 0. Physics: no sun → no PV. Mirrors the
+  Update-side gate; without this the intercept term (`x[0]=1`) projects
+  any non-zero `Beta[0]` into every night slot (issue #133).
 
 Input outlier rejection (`model.go:149-180`):
 
