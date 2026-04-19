@@ -126,43 +126,6 @@
       </div>
     </section>
 
-    <!-- History cards — daily kWh bars per metric. Toggle Week (last 7 days)
-         vs Month (so far this month). Data fetched from /api/energy/daily. -->
-    <section class="history-cards">
-      <div class="card history-card" data-metric="import">
-        <div class="history-head">
-          <div class="card-label">Imported</div>
-          <div class="history-toggle" role="tablist">
-            <button data-range="week" class="active" role="tab">Week</button>
-            <button data-range="month" role="tab">Month</button>
-          </div>
-        </div>
-        <div class="history-total val-import" data-role="total">— kWh</div>
-        <div class="history-bars" data-role="bars"></div>
-      </div>
-      <div class="card history-card" data-metric="load">
-        <div class="history-head">
-          <div class="card-label">Consumed</div>
-          <div class="history-toggle" role="tablist">
-            <button data-range="week" class="active" role="tab">Week</button>
-            <button data-range="month" role="tab">Month</button>
-          </div>
-        </div>
-        <div class="history-total val-neutral" data-role="total">— kWh</div>
-        <div class="history-bars" data-role="bars"></div>
-      </div>
-      <div class="card history-card" data-metric="export">
-        <div class="history-head">
-          <div class="card-label">Exported</div>
-          <div class="history-toggle" role="tablist">
-            <button data-range="week" class="active" role="tab">Week</button>
-            <button data-range="month" role="tab">Month</button>
-          </div>
-        </div>
-        <div class="history-total val-export" data-role="total">— kWh</div>
-        <div class="history-bars" data-role="bars"></div>
-      </div>
-    </section>
 
     <!-- Fuse — own row, one box per phase. Falls back to a single bar when
          site meter doesn't report per-phase amperage. -->
@@ -201,6 +164,15 @@
         <div class="card-label">Load today</div>
         <div class="card-value val-neutral" id="e-load">-- kWh</div>
       </div>
+    </section>
+
+    <!-- History cards — three daily kWh stats with Week/Month toggle.
+         Each <ftw-history-card> owns its own fetch/state — no wiring
+         needed in next-app.js. -->
+    <section class="history-cards">
+      <ftw-history-card metric="import" label="Imported"></ftw-history-card>
+      <ftw-history-card metric="load"   label="Consumed"></ftw-history-card>
+      <ftw-history-card metric="export" label="Exported"></ftw-history-card>
     </section>
 
     <!-- Controls — two-tier: primary strategy + manual advanced -->

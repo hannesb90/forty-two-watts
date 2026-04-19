@@ -267,7 +267,7 @@ body.ftw-next .summary-card {
   background: var(--ink-raised);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  padding: 14px 16px;
+  padding: var(--card-pad, 14px 16px);
   text-align: left;
   position: relative;
   overflow: hidden;
@@ -326,7 +326,7 @@ body.ftw-next .fuse-card {
   background: var(--ink-raised);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  padding: 14px 16px;
+  padding: var(--card-pad, 14px 16px);
 }
 body.ftw-next .fuse-card .card-label {
   font-family: var(--mono);
@@ -397,118 +397,18 @@ body.ftw-next .fuse-fallback-value {
   margin-top: 6px;
 }
 
-/* ---- History cards (Imported / Consumed / Exported, daily bars) ---- */
+/* ---- History cards row — outer grid only.
+   Each card is an <ftw-history-card> custom element with all chrome
+   + bar styling living in its shadow DOM. Only the row layout
+   stays here. */
 body.ftw-next .history-cards {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
   margin-top: 12px;
 }
-body.ftw-next .history-card {
-  background: var(--ink-raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-body.ftw-next .history-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-body.ftw-next .history-card .card-label {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--fg-muted);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-body.ftw-next .history-toggle {
-  display: inline-flex;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm, 4px);
-  overflow: hidden;
-}
-body.ftw-next .history-toggle button {
-  background: transparent;
-  border: 0;
-  color: var(--fg-muted);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  padding: 4px 8px;
-  cursor: pointer;
-}
-body.ftw-next .history-toggle button.active {
-  background: var(--accent, oklch(0.55 0.15 240));
-  color: var(--fg);
-}
-body.ftw-next .history-total {
-  font-family: var(--mono);
-  font-size: 1.05rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
-}
-body.ftw-next .history-bars {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-  align-items: end;
-  gap: 4px;
-  height: 96px;
-  padding-top: 4px;
-}
-body.ftw-next .history-bars.loading,
-body.ftw-next .history-bars:empty {
-  color: var(--fg-muted);
-  font-family: var(--mono);
-  font-size: 11px;
-  align-items: center;
-  justify-content: center;
-  display: flex;
-  height: 96px;
-}
-body.ftw-next .history-bar-col {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: end;
-  height: 100%;
-  min-width: 0;
-}
-body.ftw-next .history-bar-val {
-  font-family: var(--mono);
-  font-size: 9px;
-  color: var(--fg-muted);
-  margin-bottom: 2px;
-  line-height: 1;
-  white-space: nowrap;
-}
-body.ftw-next .history-bar {
-  width: 100%;
-  max-width: 28px;
-  background: var(--cyan, #38bdf8);
-  border-radius: 2px 2px 0 0;
-  min-height: 1px;
-  transition: height 0.3s;
-}
-body.ftw-next .history-card[data-metric="import"] .history-bar { background: var(--red-e); }
-body.ftw-next .history-card[data-metric="export"] .history-bar { background: var(--green-e); }
-body.ftw-next .history-card[data-metric="load"]   .history-bar { background: var(--fg); opacity: 0.7; }
-body.ftw-next .history-bar-label {
-  font-family: var(--mono);
-  font-size: 9px;
-  color: var(--fg-muted);
-  margin-top: 4px;
-  white-space: nowrap;
-}
 @media (max-width: 900px) {
   body.ftw-next .history-cards { grid-template-columns: 1fr; }
-  body.ftw-next .history-bars { height: 72px; }
 }
 
 /* ---- Energy cards (today) ---- */
@@ -521,7 +421,7 @@ body.ftw-next .energy-card {
   background: var(--ink-raised);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  padding: 12px 14px;
+  padding: var(--card-pad-tight, 12px 14px);
 }
 body.ftw-next .energy-card .card-label {
   font-family: var(--mono);
@@ -553,7 +453,7 @@ body.ftw-next .control-card {
   background: var(--ink-raised);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  padding: 14px 16px;
+  padding: var(--card-pad, 14px 16px);
 }
 body.ftw-next .control-card .card-label {
   font-family: var(--mono);
