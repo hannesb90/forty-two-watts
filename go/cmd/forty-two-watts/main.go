@@ -140,7 +140,10 @@ func main() {
 	}
 
 	// ---- Driver capacities (site, for control + fuse guard) ----
-	capacities := driverCapacitiesFrom(cfg.Drivers)
+	// Loadpoint drivers are filtered out — their battery_capacity_wh
+	// is vehicle capacity, not site-battery capacity.
+	capacities := driverCapacitiesFrom(cfg.Drivers, cfg.Loadpoints)
+	warnIfEVHasBatteryCapacity(cfg.Drivers, cfg.Loadpoints)
 
 	// ---- Battery models — restore from SQLite + ensure one per driver ----
 	models := make(map[string]*battery.Model)
@@ -247,7 +250,7 @@ func main() {
 			// reference the api server still holds.
 			capMu.Lock()
 			for k := range capacities { delete(capacities, k) }
-			for k, v := range driverCapacitiesFrom(newCfg.Drivers) {
+			for k, v := range driverCapacitiesFrom(newCfg.Drivers, newCfg.Loadpoints) {
 				capacities[k] = v
 			}
 			capMu.Unlock()
@@ -974,14 +977,71 @@ func registerAllDevices(st *state.Store, reg *drivers.Registry) {
 	}
 }
 
-func driverCapacitiesFrom(drivers []config.Driver) map[string]float64 {
-	out := make(map[string]float64, len(drivers))
-	for _, d := range drivers {
-		if d.BatteryCapacityWh > 0 {
-			out[d.Name] = d.BatteryCapacityWh
+// driverCapacitiesFrom builds the driver-name → battery-capacity map
+// the MPC sums into Params.CapacityWh and the control layer uses for
+// fuse-guard / peak-shave sizing.
+//
+// Critically: drivers that are referenced by a loadpoint entry are
+// EV chargers, not home batteries — their `battery_capacity_wh`
+// represents VEHICLE capacity and must NOT land in the MPC battery
+// pool (doing so inflates SoC %, terminal-value credit, and the
+// discharge-headroom DP arithmetic). Found live on Fredrik's Pi: his
+// Easee entry had battery_capacity_wh=75000, which combined with
+// Ferroamp (15.2 kWh) + Sungrow (9.6 kWh) gave a fantasy 99.8 kWh
+// battery pool.
+//
+// Filtering here rather than at config-parse time means the vehicle
+// capacity is still available for EV-side logic (loadpoint manager)
+// without a schema migration.
+func driverCapacitiesFrom(drivers []config.Driver, loadpoints []config.Loadpoint) map[string]float64 {
+	evDrivers := make(map[string]struct{}, len(loadpoints))
+	for _, lp := range loadpoints {
+		if lp.DriverName != "" {
+			evDrivers[lp.DriverName] = struct{}{}
 		}
 	}
+	out := make(map[string]float64, len(drivers))
+	for _, d := range drivers {
+		if d.BatteryCapacityWh <= 0 {
+			continue
+		}
+		if _, isEV := evDrivers[d.Name]; isEV {
+			// Don't count EV vehicle capacity as battery capacity.
+			// (Value remains in cfg.Drivers for any driver-side use.)
+			continue
+		}
+		out[d.Name] = d.BatteryCapacityWh
+	}
 	return out
+}
+
+// warnIfEVHasBatteryCapacity surfaces operator mis-config where an EV
+// driver's YAML entry still carries battery_capacity_wh. The value is
+// now ignored for MPC battery-pool purposes, but we log at WARN so the
+// operator moves it to the loadpoint's vehicle_capacity_wh (where it
+// serves the DP's EV SoC inference) rather than leaving it as a
+// silent no-op.
+func warnIfEVHasBatteryCapacity(drivers []config.Driver, loadpoints []config.Loadpoint) {
+	evDrivers := make(map[string]struct{}, len(loadpoints))
+	for _, lp := range loadpoints {
+		if lp.DriverName != "" {
+			evDrivers[lp.DriverName] = struct{}{}
+		}
+	}
+	for _, d := range drivers {
+		if d.BatteryCapacityWh <= 0 {
+			continue
+		}
+		if _, isEV := evDrivers[d.Name]; !isEV {
+			continue
+		}
+		slog.Warn("driver is referenced by a loadpoint — battery_capacity_wh "+
+			"is being ignored for MPC battery-pool sizing. Move the value "+
+			"to loadpoints[].vehicle_capacity_wh to keep EV SoC inference "+
+			"working.",
+			"driver", d.Name,
+			"battery_capacity_wh", d.BatteryCapacityWh)
+	}
 }
 
 // buildLoadpointConfigs adapts YAML-facing config.Loadpoint entries
