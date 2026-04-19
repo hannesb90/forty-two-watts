@@ -415,6 +415,12 @@
   <!-- Step 1: Welcome -->
   <div class="step" id="step-1" data-step="1">
     <div class="welcome-center">
+      <!-- Pre-setup update check. Autonomous: self-checks
+           /api/version/check, renders a banner iff an update is
+           available, drives the full pull-and-reload flow. Stays
+           invisible when the backend has self-update gated off. -->
+      <ftw-update-check></ftw-update-check>
+
       <h2>Welcome to forty-two-watts</h2>
       <p>Let's set up your home energy system in a few steps.</p>
       <button class="btn-primary" onclick="goStep(2)">Get started</button>
@@ -693,6 +699,10 @@
 
 </div>
 
+<!-- Components: registers <ftw-update-check> (pre-setup update banner)
+     and its dependencies. Loaded as a module so imports resolve without
+     a bundle step. -->
+<script type="module" src="/components/index.js"></script>
 <script src="/setup.js"></script>
 </body>
 </html>
