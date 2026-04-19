@@ -57,10 +57,10 @@ WARN proxy enabled — /api/* forwards upstream  upstream=http://192.168.1.139:8
 | Path | Handler |
 |---|---|
 | `/api/*` | Forwarded to `FTW_PROXY_UPSTREAM` |
-| `/`, `/index.html`, `/next`, `/setup` | Local `web/` files |
+| `/`, `/index.html`, `/legacy`, `/setup` | Local `web/` files |
 | `/style.css`, `/components/*`, `/app.js`, … | Local `web/` files |
 
-Editing `web/next.html` or `web/components/ftw-modal.js` shows up on
+Editing `web/index.html` or `web/components/ftw-modal.js` shows up on
 the next browser refresh. `/api/status` still shows live SoC from the
 Pi.
 
@@ -93,20 +93,20 @@ Need to exercise write paths for a specific debugging session? Set
   Server-Sent Events / WebSockets wouldn't work through it today.
   The project doesn't use either yet (`clients poll`).
 
-## Side-by-side UI: `/` vs `/next`
+## Side-by-side UI: `/` vs `/legacy`
 
-The web-component refactor lands incrementally. While it's in
-progress, both versions run off the same backend:
+The web-component rewrite is now the default at `/`. The original
+layout is still served at `/legacy` for comparison / regression
+checks while the old file set is wound down:
 
 | URL | HTML | JS | Purpose |
 |---|---|---|---|
-| `/` | `index.html` | `app.js` | Legacy layout, do not touch |
-| `/next` | `next.html` | `next-app.js` | Web-components rewrite |
+| `/` | `index.html` | `next-app.js` | Web-components dashboard (default) |
+| `/legacy` | `legacy.html` | `app.js` | Pre-redesign layout — do not touch |
 
-Both share the same proxy, the same `style.css`, the same theme
-tokens in `/components/theme.css`. Edit on `/next` without
-regressing `/`. The eventual cutover replaces `index.html` with the
-contents of `next.html` and retires the legacy files.
+`/next` stays registered as a 301 to `/` so older bookmarks still
+land on the right page. Both pages share the same proxy, the same
+`style.css`, and the theme tokens in `/components/theme.css`.
 
 ## docker compose dev
 

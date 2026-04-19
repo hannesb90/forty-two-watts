@@ -45,7 +45,7 @@ inherit into every shadow DOM via `:root`.
 
 ### Light (flipped when `data-theme="light"`)
 
-Only the next-era tokens flip — legacy hex tokens stay for `/index.html`.
+Only the next-era tokens flip — legacy hex tokens stay for `/legacy`.
 
 | Token | Value |
 |---|---|
@@ -63,7 +63,8 @@ light mode so they keep contrast on paper without looking neon.
 
 Hex tokens `--bg / --surface / --surface2 / --border / --text /
 --text-dim / --accent / --green / --red / --radius` live at `:root`
-alongside the next palette so `/index.html` keeps its historical
+alongside the next palette so `/legacy` (the pre-redesign dashboard,
+still served for regression comparison) keeps its historical
 appearance. **Do not use these for new work** — reach for the oklch
 tokens above.
 
@@ -222,7 +223,8 @@ on cards, large rounded boxes (> 18 px radius), gradient-filled buttons.
 |---|---|
 | `web/components/theme.css` | All tokens, both themes. Loaded first by every page. |
 | `web/components/ftw-element.js` | Base class that gives every `<ftw-*>` shadow DOM the token inheritance for free. |
-| `web/style.css` | Legacy `/index.html` styling. **Read-only** for new work. |
+| `web/style.css` | Shared foundation — loaded by `/`, `/legacy`, `/setup`. Holds resets, form defaults, and legacy dashboard rules that haven't migrated yet. Retire once `/legacy` goes away. |
+| `web/next.css` | `/` (default dashboard) specific layer — scoped to `body.ftw-next` so it doesn't bleed into `/legacy`. |
 | `web/next.css` | `/next` dashboard specific layout. |
 | `web/setup.html` (inline `<style>`) | `/setup` wizard chrome. |
 
@@ -236,7 +238,7 @@ light theme can flip it cleanly.
 - Do not reintroduce Google Fonts. Self-host or fall back to system.
 - Do not hard-code `#ffb020` — use `var(--accent-e)`.
 - Do not use the legacy hex palette (`--surface`, `--accent`, `--green`)
-  in new code; those tokens will be retired once `/index.html` is
+  in new code; those tokens will be retired once `/legacy` is
   decommissioned.
 - Do not stack multiple accent colours. One accent, restraint, hierarchy
   through mono / sans contrast and type weight.

@@ -1415,8 +1415,15 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	if path == "/setup" {
 		path = "/setup.html"
 	}
-	if path == "/next" {
-		path = "/next.html"
+	// Legacy dashboard moved behind /legacy; /next is now the default
+	// at /. Keep /next working as a 301 so old bookmarks land correctly
+	// without advertising two URLs for the same content.
+	if path == "/next" || path == "/next.html" {
+		http.Redirect(w, r, "/", http.StatusMovedPermanently)
+		return
+	}
+	if path == "/legacy" {
+		path = "/legacy.html"
 	}
 	// Prevent path traversal
 	clean := filepath.Clean(filepath.Join(s.deps.WebDir, path))
