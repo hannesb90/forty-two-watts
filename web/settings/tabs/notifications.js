@@ -49,15 +49,12 @@
       if (!nc.ntfy) nc.ntfy = { server: "https://ntfy.sh", topic: "" };
       if (!nc.events || !nc.events.length) nc.events = defaultEvents();
 
-      // Pre-fill blank template fields with the backend defaults.
-      for (var i = 0; i < nc.events.length; i++) {
-        var ev = nc.events[i];
-        var def = defaults[ev.type];
-        if (def) {
-          if (!ev.title_template) ev.title_template = def.title;
-          if (!ev.body_template) ev.body_template = def.body;
-        }
-      }
+      // Defaults from the backend are shown as placeholders, NOT written
+      // into ev.title_template / ev.body_template — otherwise a Save
+      // without edits would persist the current default into YAML and
+      // freeze this site on today's text. Keeping the field blank lets
+      // the backend render the live default on every fire; if defaults
+      // change in a future release, unchanged rules pick them up.
 
       var html = '<ftw-notif-status interval-ms="5000" style="margin-bottom:10px"></ftw-notif-status>' +
         '<fieldset><legend>Transport</legend>' +
@@ -90,27 +87,53 @@
           : "paste token") + '">' +
         '</fieldset>';
 
+      var escAttr = function (s) {
+        return (s == null ? "" : String(s))
+          .replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+          .replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      };
+
       for (var ei = 0; ei < nc.events.length; ei++) {
         var rule = nc.events[ei];
+        var def = defaults[rule.type] || {};
+        // driver_recovered has no threshold_s knob on the backend — it
+        // fires within 30 s of telemetry resuming. Showing a field that
+        // does nothing would mislead; show a small note instead.
+        var usesThreshold = rule.type !== "driver_recovered";
         html += '<fieldset><legend>' + (rule.type || "event #" + ei) + '</legend>' +
-          '<label><input type="checkbox" data-checkbox-path="notifications.events.' + ei + '.enabled"' + (rule.enabled ? ' checked' : '') + '> Enabled</label>' +
-          '<div class="field-row"><div>' +
-          field("Threshold (s)", "notifications.events." + ei + ".threshold_s", "number", 600,
-            "How long the condition must hold before firing. Default 600 s (10 min). Independent of the control-loop watchdog.") +
-          '</div><div>' +
-          field("Priority (0–5)", "notifications.events." + ei + ".priority", "number", 3,
-            "0 uses the default priority above.") +
-          '</div></div>' +
-          '<div class="field-row"><div>' +
+          '<label><input type="checkbox" data-checkbox-path="notifications.events.' + ei + '.enabled"' + (rule.enabled ? ' checked' : '') + '> Enabled</label>';
+        if (usesThreshold) {
+          html += '<div class="field-row"><div>' +
+            field("Threshold (s)", "notifications.events." + ei + ".threshold_s", "number", 600,
+              "How long the condition must hold before firing. Default 600 s (10 min). Independent of the control-loop watchdog.") +
+            '</div><div>' +
+            field("Priority (0–5)", "notifications.events." + ei + ".priority", "number", 3,
+              "0 uses the default priority above.") +
+            '</div></div>';
+        } else {
+          html += '<p style="color:var(--text-dim);font-size:0.75rem;margin:6px 0">' +
+            'Fires within 30 s of telemetry resuming — no threshold configurable.' +
+            '</p>' +
+            field("Priority (0–5)", "notifications.events." + ei + ".priority", "number", 3,
+              "0 uses the default priority above.");
+        }
+        html += '<div class="field-row"><div>' +
           field("Cooldown (s)", "notifications.events." + ei + ".cooldown_s", "number", 3600,
             "Minimum seconds between fires per driver.") +
           '</div><div>' +
           field("Tags (comma-separated)", "notifications.events." + ei + ".tags", "text", "") +
           '</div></div>' +
-          field("Title template", "notifications.events." + ei + ".title_template", "text", "",
-            "Go text/template. Leave blank for default.") +
-          field("Body template", "notifications.events." + ei + ".body_template", "text", "",
-            "Go text/template. Leave blank for default.") +
+          // Templates: input value = operator's custom text (if any),
+          // placeholder = backend default for visibility. Leaving blank
+          // preserves "use server defaults" semantics through save.
+          '<label>Title template ' + help("Go text/template. Leave blank to use the server default.") + '</label>' +
+          '<input type="text" data-path="notifications.events.' + ei + '.title_template" ' +
+          'value="' + escAttr(rule.title_template || "") + '" ' +
+          'placeholder="' + escAttr(def.title || "") + '">' +
+          '<label>Body template ' + help("Go text/template. Leave blank to use the server default.") + '</label>' +
+          '<input type="text" data-path="notifications.events.' + ei + '.body_template" ' +
+          'value="' + escAttr(rule.body_template || "") + '" ' +
+          'placeholder="' + escAttr(def.body || "") + '">' +
           '</fieldset>';
       }
 

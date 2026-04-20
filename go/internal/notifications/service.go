@@ -205,7 +205,11 @@ func (s *Service) Subscribe(bus *events.Bus) {
 		if !ok {
 			return
 		}
-		s.observeAt(ev.Health, ev.Now)
+		// Offload to a goroutine: the bus runs handlers inline on the
+		// publisher (the control loop), and observeAt can trigger a
+		// 10 s HTTP Publish inside dispatch(). Without this, a slow
+		// ntfy server would stall the next control tick.
+		go s.observeAt(ev.Health, ev.Now)
 	})
 	bus.Subscribe(events.KindNotificationTest, func(e events.Event) {
 		ev, ok := e.(events.NotificationTest)
@@ -304,8 +308,11 @@ func (s *Service) observeAt(health map[string]telemetry.DriverHealth, now time.T
 					continue
 				}
 				// Fresh — clear the per-outage latch so the NEXT outage
-				// can fire. Don't touch activeAlert (that belongs to the
-				// recovered rule's state machine).
+				// can fire. Don't touch activeAlert here: the recovered
+				// rule consumes + clears it, and this branch may run
+				// before the recovered branch in the same Observe pass.
+				// If driver_recovered is DISABLED it would leak — a
+				// post-pass cleanup below handles that case.
 				if since < threshold {
 					delete(s.alreadyFired, key)
 					continue
@@ -339,6 +346,29 @@ func (s *Service) observeAt(health map[string]telemetry.DriverHealth, now time.T
 				delete(s.activeAlert, driver)
 				s.lastFired[key] = now
 				pending = append(pending, dispatch{rule, s.buildData(driver, rule.Type, since, now)})
+			}
+		}
+	}
+	// Post-pass: if no enabled driver_recovered rule exists, nothing
+	// above ever clears activeAlert when a driver goes healthy again,
+	// and Status().ActiveAlert would leak upward forever. Clean up
+	// here for every driver whose telemetry is fresh. The 30 s window
+	// mirrors the recovered rule's stillStale check.
+	recoveredEnabled := false
+	for _, r := range rules {
+		if r.Enabled && r.Type == EventDriverRecovered {
+			recoveredEnabled = true
+			break
+		}
+	}
+	if !recoveredEnabled {
+		for driver := range s.activeAlert {
+			h, ok := health[driver]
+			if !ok || h.LastSuccess == nil {
+				continue
+			}
+			if now.Sub(*h.LastSuccess) < 30*time.Second {
+				delete(s.activeAlert, driver)
 			}
 		}
 	}
@@ -434,12 +464,21 @@ func (s *Service) dispatch(cfg *config.Notifications, rule config.NotificationRu
 	if err != nil {
 		slog.Warn("notifications: title render failed", "event", rule.Type, "err", err)
 		s.bumpFailed()
+		// Still emit a failed event so the history UI shows render
+		// errors — otherwise operators see only the bumped Failed
+		// counter with no trail of what broke.
+		s.emitDispatched(rule.Type, data.Device,
+			Message{Title: titleTpl, Body: bodyTpl, Priority: rule.Priority},
+			"failed", "title render: "+err.Error())
 		return
 	}
 	body, err := renderTemplate("body", bodyTpl, data)
 	if err != nil {
 		slog.Warn("notifications: body render failed", "event", rule.Type, "err", err)
 		s.bumpFailed()
+		s.emitDispatched(rule.Type, data.Device,
+			Message{Title: strings.TrimSpace(title), Body: bodyTpl, Priority: rule.Priority},
+			"failed", "body render: "+err.Error())
 		return
 	}
 	prio := rule.Priority
@@ -452,9 +491,22 @@ func (s *Service) dispatch(cfg *config.Notifications, rule config.NotificationRu
 		Priority: prio,
 		Tags:     splitTags(rule.Tags),
 	}
+	// Nil-publisher guard: cold-start / reload can leave pub unset when
+	// notifications are enabled but the configured provider isn't
+	// installed (NewProvider returned nil). Treat as a failed dispatch
+	// so history + counters stay truthful instead of panicking.
+	s.mu.Lock()
+	pub := s.pub
+	s.mu.Unlock()
+	if pub == nil {
+		slog.Warn("notifications: no publisher installed — skipping", "event", rule.Type, "driver", data.Device)
+		s.bumpFailed()
+		s.emitDispatched(rule.Type, data.Device, msg, "failed", "no publisher installed")
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := s.pub.Publish(ctx, msg); err != nil {
+	if err := pub.Publish(ctx, msg); err != nil {
 		slog.Warn("notifications: publish failed", "event", rule.Type, "driver", data.Device, "err", err)
 		s.bumpFailed()
 		s.emitDispatched(rule.Type, data.Device, msg, "failed", err.Error())

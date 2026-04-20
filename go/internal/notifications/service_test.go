@@ -407,6 +407,12 @@ func TestEventBusSubscribe(t *testing.T) {
 	last := clk.now()
 	clk.advance(700 * time.Second)
 	bus.Publish(events.HealthTick{Health: healthStale(last), Now: clk.now()})
+	// HealthTick handler runs observeAt in a goroutine so it can't stall
+	// the control loop on HTTP publish — poll for the dispatch.
+	deadline := time.Now().Add(time.Second)
+	for len(pub.Messages()) < 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if n := len(pub.Messages()); n != 1 {
 		t.Fatalf("bus did not wire tick: got %d msgs", n)
 	}
@@ -420,5 +426,44 @@ func TestEventBusSubscribe(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no reply from test event")
+	}
+}
+
+func TestActiveAlertClearsWhenRecoveredDisabled(t *testing.T) {
+	cfg := baseCfg()
+	// Disable the recovered rule — offline still fires, but nothing
+	// should leak activeAlert once the driver comes back.
+	cfg.Events[1].Enabled = false
+	pub := &fakePub{}
+	svc, clk := newSvc(cfg, pub)
+	last := clk.now()
+
+	clk.advance(700 * time.Second)
+	svc.Observe(healthStale(last))
+	if st := svc.Status(); st.ActiveAlert != 1 {
+		t.Fatalf("after outage: got ActiveAlert=%d, want 1", st.ActiveAlert)
+	}
+
+	// Driver comes back; with recovered disabled the post-pass cleanup
+	// must drop activeAlert so Status().ActiveAlert returns to 0.
+	recover := clk.now()
+	clk.advance(5 * time.Second)
+	svc.Observe(healthOk(recover))
+	if st := svc.Status(); st.ActiveAlert != 0 {
+		t.Fatalf("after recovery: got ActiveAlert=%d, want 0", st.ActiveAlert)
+	}
+}
+
+func TestNilPublisherNoPanic(t *testing.T) {
+	// Publisher starts nil (simulates cold-start where NewProvider
+	// returned nil) but config is enabled — dispatch must not panic,
+	// it should treat this as a failed send and log it to history.
+	svc, clk := newSvc(baseCfg(), nil)
+	last := clk.now()
+	clk.advance(700 * time.Second)
+	// Ensure no panic.
+	svc.Observe(healthStale(last))
+	if st := svc.Status(); st.Failed != 1 {
+		t.Fatalf("expected Failed=1 after nil-publisher dispatch, got %+v", st)
 	}
 }
