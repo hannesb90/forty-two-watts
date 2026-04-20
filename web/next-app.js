@@ -391,10 +391,13 @@
       var phaseI = Array.isArray(data.phase_amps) ? data.phase_amps : [];
       var hasPhaseData = phaseI.length > 0;
 
-      // Show fallback (single bar + headline amps) only when no per-phase data.
+      // Hide the per-phase box row entirely when no phase data, otherwise
+      // we'd render `phases` boxes populated with 0 A alongside the
+      // aggregate fallback and the two cards would double up.
       var fallbackBar = $("fuse-bar-fallback");
       if (fallbackBar) fallbackBar.style.display = hasPhaseData ? "none" : "block";
       fuseUse.style.display = hasPhaseData ? "none" : "block";
+      if (fusePhases) fusePhases.style.display = hasPhaseData ? "" : "none";
 
       if (!hasPhaseData) {
         var totalDischarge = 0;
@@ -406,10 +409,8 @@
         var totalFusePct = Math.min(100, (peakA / maxAmps) * 100);
         fuseFill.style.width = totalFusePct + "%";
         fuseFill.className = "fuse-fill" + (totalFusePct > 85 ? " crit" : totalFusePct > 65 ? " warn" : "");
-      }
-
-      // Per-phase boxes: one tile per configured phase, side-by-side.
-      if (fusePhases) {
+      } else if (fusePhases) {
+        // Per-phase boxes: one tile per configured phase, side-by-side.
         if (fusePhases.childElementCount !== phases) {
           fusePhases.innerHTML = "";
           for (var p = 0; p < phases; p++) {

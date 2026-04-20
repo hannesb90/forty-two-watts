@@ -818,8 +818,14 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc, radiu
                             clickable = false, role = "", name = "", id = "" }) {
   const r = radius;
   const { x, y } = pos;
+  // Clickable planets must advertise themselves to assistive tech:
+  // role=button so screen readers announce "button", and aria-label
+  // derived from the visible title/name so the announcement names
+  // what activating this node will open.
+  const nodeLabel = [title, nameLabel].filter(Boolean).join(" ");
+  const ariaLabel = nodeLabel ? `Open ${nodeLabel}` : "Open node";
   const groupAttrs = clickable
-    ? ` class="ef-node ef-clickable" data-role="${escapeXml(role)}" data-name="${escapeXml(name)}" data-id="${escapeXml(id)}" tabindex="0"`
+    ? ` class="ef-node ef-clickable" data-role="${escapeXml(role)}" data-name="${escapeXml(name)}" data-id="${escapeXml(id)}" tabindex="0" role="button" aria-label="${escapeXml(ariaLabel)}"`
     : ` class="ef-node"`;
   // When a per-device name suffix is present, the title becomes two
   // stacked lines ("SOLAR" / "SUNGROW"). That preserves more horizontal

@@ -162,17 +162,24 @@ class FtwHistoryCard extends FtwElement {
     const label = this.getAttribute("label") || "";
     const accent = this._accent();
     this.style.setProperty("--ftw-history-accent", accent);
+    // Plain buttons with aria-pressed rather than role=tablist/tab: a
+    // proper tabs pattern requires aria-selected + arrow-key navigation
+    // we don't implement, so we'd only be lying to assistive tech.
+    // accent is applied to the bar-chart in afterRender() via
+    // setAttribute, not interpolated here, so a future caller passing a
+    // CSS value containing quotes can't escape the attribute context.
+    const wk = this._range === "week";
     return `
       <div class="card-inner">
         <div class="head">
           <div class="label">${escapeHtml(label)}</div>
-          <div class="toggle" role="tablist">
-            <button data-range="week"  role="tab" ${this._range==="week"?"class=active":""}>Week</button>
-            <button data-range="month" role="tab" ${this._range==="month"?"class=active":""}>Month</button>
+          <div class="toggle">
+            <button type="button" data-range="week"  aria-pressed="${wk ? "true" : "false"}"${wk ? ' class="active"' : ""}>Week</button>
+            <button type="button" data-range="month" aria-pressed="${!wk ? "true" : "false"}"${!wk ? ' class="active"' : ""}>Month</button>
           </div>
         </div>
         <div class="total" data-role="total">— kWh</div>
-        <ftw-bar-chart data-role="chart" accent="${accent}" loading="true"></ftw-bar-chart>
+        <ftw-bar-chart data-role="chart" loading="true"></ftw-bar-chart>
       </div>
     `;
   }
@@ -181,6 +188,7 @@ class FtwHistoryCard extends FtwElement {
     this._chart   = this.shadowRoot.querySelector('[data-role="chart"]');
     this._totalEl = this.shadowRoot.querySelector('[data-role="total"]');
     this._toggleEl = this.shadowRoot.querySelector('.toggle');
+    if (this._chart) this._chart.setAttribute("accent", this._accent());
     if (this._toggleEl) {
       this._toggleEl.addEventListener('click', (e) => {
         const btn = e.target.closest('button[data-range]');
