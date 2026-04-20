@@ -27,6 +27,8 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/configreload"
 	"github.com/frahlg/forty-two-watts/go/internal/control"
 	"github.com/frahlg/forty-two-watts/go/internal/currency"
+	"github.com/frahlg/forty-two-watts/go/internal/events"
+	"github.com/frahlg/forty-two-watts/go/internal/notifications"
 	"github.com/frahlg/forty-two-watts/go/internal/arp"
 	"github.com/frahlg/forty-two-watts/go/internal/drivers"
 	"github.com/frahlg/forty-two-watts/go/internal/forecast"
@@ -235,6 +237,14 @@ func main() {
 	// in place.
 	var pvSvc *pvmodel.Service
 	var forecastSvc *forecast.Service
+	// Notifications: pre-declared so the hot-reload Applier can push
+	// fresh config into the provider + rule engine. Constructed
+	// unconditionally below so API handlers always have a live pointer.
+	var notifProvider notifications.Provider
+	var notifSvc *notifications.Service
+	// Event bus: decouples core loops (control tick, API) from
+	// cross-cutting subscribers (notifications today, audit/webhooks later).
+	bus := events.NewBus()
 
 	// ---- EV loadpoints ----
 	// Manager is created early so the config hot-reload closure can
@@ -303,6 +313,20 @@ func main() {
 			// observed state across reloads (plug status, session
 			// anchor, current SoC estimate) — see loadpoint.Manager.Load.
 			lpMgr.Load(buildLoadpointConfigs(newCfg.Loadpoints))
+
+			// Notifications: rebuild the provider from fresh config
+			// (handles the cold-start case where the initial config
+			// had no notifications: block and notifProvider was nil),
+			// wire it onto the service, then reset the rule-engine
+			// per-outage latch. All calls are nil-safe.
+			newProv := notifications.NewProvider(newCfg.Notifications)
+			notifProvider = newProv
+			var newPub notifications.Publisher
+			if newProv != nil {
+				newPub = newProv
+			}
+			notifSvc.SetPublisher(newPub)
+			notifSvc.Reload(newCfg.Notifications)
 
 			// Weather diff → push live into the PV twin + forecast
 			// fetcher without a process restart. Users adjust rated PV
@@ -635,6 +659,10 @@ func main() {
 			CurrentVersion: current,
 			SocketPath:     envOr("FTW_UPDATER_SOCKET", "/run/ftw-update/sock"),
 			StatusPath:     envOr("FTW_UPDATER_STATUS", "/run/ftw-update/state.json"),
+			// Publish events.UpdateAvailable when a new release lands so
+			// the notifications service (or any other subscriber) can act
+			// without polling the checker directly.
+			Bus: bus,
 		}, st)
 		selfUpdater.Start(ctx)
 		slog.Info("selfupdate enabled", "socket", envOr("FTW_UPDATER_SOCKET", "/run/ftw-update/sock"))
@@ -672,6 +700,8 @@ func main() {
 		Loadpoints: lpMgr,
 		HA:         haBridge,
 		Registry:   reg,
+		Events:     bus,
+		Notifications: notifSvc,
 		SelfUpdate: selfUpdater,
 		Version:    Version,
 	}
@@ -718,6 +748,79 @@ func main() {
 		defer c()
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
+
+	// ---- Notifications (always constructed so API + applier hold live refs) ----
+	// Provider selection uses the strategy registry in internal/notifications;
+	// only "ntfy" is registered today, but adding a new one is drop-in.
+	notifProvider = notifications.NewProvider(cfg.Notifications)
+	var notifPub notifications.Publisher
+	if notifProvider != nil {
+		notifPub = notifProvider
+	}
+	notifSvc = notifications.New(cfg.Notifications, notifPub, func(name string) (string, string, string, bool) {
+		dev := st.LookupDeviceByDriverName(name)
+		if dev == nil {
+			return "", "", "", false
+		}
+		return dev.DeviceID, dev.Make, dev.Serial, true
+	})
+	// FuseReader: on each HealthTick the fuse_over_limit rule reads
+	// the site meter's live per-phase currents from telemetry and
+	// compares against cfg.Fuse.MaxAmps. Closes over cfg + cfgMu so
+	// hot-reloaded fuse changes take effect without restart; closes
+	// over tel so new metric emits are picked up immediately.
+	notifSvc.SetFuseReader(func() (map[string]float64, float64, bool) {
+		cfgMu.RLock()
+		siteMeter := cfg.SiteMeterDriver()
+		limitA := cfg.Fuse.MaxAmps
+		cfgMu.RUnlock()
+		if siteMeter == "" || limitA <= 0 {
+			return nil, 0, false
+		}
+		amps := map[string]float64{}
+		for _, phase := range []string{"l1", "l2", "l3"} {
+			if v, _, ok := tel.LatestMetric(siteMeter, "meter_"+phase+"_a"); ok {
+				amps[strings.ToUpper(phase)] = v
+			}
+		}
+		if len(amps) == 0 {
+			return nil, limitA, false
+		}
+		return amps, limitA, true
+	})
+	notifSvc.Subscribe(bus)
+	// Persist every dispatch to state.notification_log via a bus
+	// subscriber so the notifications package stays free of storage
+	// logic. The UI reads this table through /api/notifications/history.
+	bus.Subscribe(events.KindNotificationDispatched, func(e events.Event) {
+		ev, ok := e.(events.NotificationDispatched)
+		if !ok {
+			return
+		}
+		if err := st.RecordNotification(state.NotificationEntry{
+			TsMs:      ev.Time.UnixMilli(),
+			EventType: ev.EventType,
+			Driver:    ev.Driver,
+			Title:     ev.Title,
+			Body:      ev.Body,
+			Priority:  ev.Priority,
+			Status:    ev.Status,
+			Error:     ev.Error,
+		}); err != nil {
+			slog.Warn("notification_log: record failed", "err", err)
+		}
+	})
+	// Late-bind onto the Deps literal that was built earlier with a nil
+	// notifSvc (the deps struct is assembled before this block runs).
+	// Same pattern haBridge uses a few lines below.
+	deps.Notifications = notifSvc
+	if cfg.Notifications != nil && cfg.Notifications.Enabled {
+		name := "ntfy"
+		if notifProvider != nil {
+			name = notifProvider.Name()
+		}
+		slog.Info("notifications enabled", "provider", name)
+	}
 
 	// ---- HA MQTT bridge (optional) ----
 	if cfg.HomeAssistant != nil && cfg.HomeAssistant.Enabled {
@@ -874,10 +977,16 @@ func main() {
 					slog.Warn("driver telemetry stale — marking offline + reverting to autonomous",
 						"name", tr.Name, "timeout", watchdogTimeout)
 					_ = reg.SendDefault(ctx, tr.Name)
+					bus.Publish(events.DriverLost{Driver: tr.Name, At: time.Now()})
 				} else {
 					slog.Info("driver telemetry recovered — back online", "name", tr.Name)
+					bus.Publish(events.DriverRecovered{Driver: tr.Name, At: time.Now()})
 				}
 			}
+			// Fire a HealthTick so subscribers that track user-level
+			// thresholds (e.g. notifications) can evaluate their own
+			// rules without the control loop knowing about them.
+			bus.Publish(events.HealthTick{Health: tel.AllHealth(), Now: time.Now()})
 
 			// ---- Safety: site meter stale → idle everything this cycle ----
 			// Otherwise stale grid readings cause one battery to charge another.

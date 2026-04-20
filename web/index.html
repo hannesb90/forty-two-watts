@@ -75,6 +75,7 @@
       <button id="hero-toggle" class="icon-btn" data-menu-label="Hero / tiles" title="Switch between hero diagram and numeric tiles">&#9638;</button>
       <button id="theme-toggle" class="icon-btn" data-menu-label="Dark mode" title="Toggle light / dark theme">&#9790;</button>
       <button id="ui-mode-toggle" class="btn-link" title="Show advanced controls + diagnostics">Advanced</button>
+      <ftw-notif-history poll-ms="30000" data-menu-label="Notification history"></ftw-notif-history>
       <button id="settings-btn" class="settings-btn" data-menu-label="Settings" title="Settings">⚙</button>
       <ftw-update-badge></ftw-update-badge>
       <span id="version" class="version" title="Click for version info" style="cursor:pointer">...</span>
@@ -97,6 +98,7 @@
         <button data-tab="batteries">Batteries</button>
         <button data-tab="planner">Planner</button>
         <button data-tab="ha">Home Assistant</button>
+        <button data-tab="notifications">Notifications</button>
       </div>
       <div class="modal-body" id="settings-body">
         <!-- Filled by JS -->
@@ -395,6 +397,15 @@
 
   <script src="/next-app.js?v=next1"></script>
   <script src="/settings.js?v=diag1"></script>
+  <script src="/settings/tabs/control.js?v=tabsplit1"></script>
+  <script src="/settings/tabs/devices.js?v=tabsplit1"></script>
+  <script src="/settings/tabs/price.js?v=tabsplit1"></script>
+  <script src="/settings/tabs/weather.js?v=tabsplit1"></script>
+  <script src="/settings/tabs/batteries.js?v=tabsplit1"></script>
+  <script src="/settings/tabs/planner.js?v=tabsplit1"></script>
+  <script src="/settings/tabs/ha.js?v=tabsplit1"></script>
+  <script src="/settings/tabs/notifications.js?v=tabsplit1"></script>
+  <script src="/settings/tabs/ev.js?v=tabsplit1"></script>
   <script src="/models.js?v=diag1"></script>
   <script src="/plan.js?v=diag1"></script>
   <script src="/twins.js?v=diag1"></script>
