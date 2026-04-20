@@ -66,6 +66,7 @@ const (
 	KindDriverRecovered        = "driver.recovered"
 	KindNotificationTest       = "notifications.test"
 	KindNotificationDispatched = "notifications.dispatched"
+	KindUpdateAvailable        = "update.available"
 )
 
 // HealthTick is fired every control-loop tick with the current telemetry
@@ -115,6 +116,20 @@ type NotificationDispatched struct {
 }
 
 func (NotificationDispatched) Kind() string { return KindNotificationDispatched }
+
+// UpdateAvailable is emitted by the self-update checker when a new
+// release is discovered (and not on the operator's skip list). Emitted
+// at most once per unique Version so a periodic re-check doesn't spam
+// subscribers that already saw the transition.
+type UpdateAvailable struct {
+	Version         string
+	PreviousVersion string
+	ReleaseNotesURL string
+	PublishedAt     time.Time
+	At              time.Time
+}
+
+func (UpdateAvailable) Kind() string { return KindUpdateAvailable }
 
 // NotificationTest is emitted by the API "Send test" endpoint. Reply
 // receives the dispatch result so the HTTP handler can surface any

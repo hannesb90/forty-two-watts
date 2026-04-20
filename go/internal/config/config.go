@@ -703,7 +703,27 @@ func applyDefaults(c *Config) {
 			Events: []NotificationRule{
 				{Type: "driver_offline", Enabled: false, ThresholdS: 600, Priority: 4, CooldownS: 3600},
 				{Type: "driver_recovered", Enabled: false, Priority: 3},
+				{Type: "update_available", Enabled: false, Priority: 3, CooldownS: 3600},
 			},
+		}
+	}
+	// Rule-list migration: add new built-in event types to existing
+	// configs that predate them so upgrading lights up the toggle in
+	// Settings → Notifications instead of needing manual YAML edits.
+	if c.Notifications != nil {
+		builtins := []NotificationRule{
+			{Type: "driver_offline", Enabled: false, ThresholdS: 600, Priority: 4, CooldownS: 3600},
+			{Type: "driver_recovered", Enabled: false, Priority: 3},
+			{Type: "update_available", Enabled: false, Priority: 3, CooldownS: 3600},
+		}
+		have := make(map[string]bool, len(c.Notifications.Events))
+		for _, r := range c.Notifications.Events {
+			have[r.Type] = true
+		}
+		for _, b := range builtins {
+			if !have[b.Type] {
+				c.Notifications.Events = append(c.Notifications.Events, b)
+			}
 		}
 	}
 	if c.Notifications != nil {

@@ -659,6 +659,10 @@ func main() {
 			CurrentVersion: current,
 			SocketPath:     envOr("FTW_UPDATER_SOCKET", "/run/ftw-update/sock"),
 			StatusPath:     envOr("FTW_UPDATER_STATUS", "/run/ftw-update/state.json"),
+			// Publish events.UpdateAvailable when a new release lands so
+			// the notifications service (or any other subscriber) can act
+			// without polling the checker directly.
+			Bus: bus,
 		}, st)
 		selfUpdater.Start(ctx)
 		slog.Info("selfupdate enabled", "socket", envOr("FTW_UPDATER_SOCKET", "/run/ftw-update/sock"))

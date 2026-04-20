@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/frahlg/forty-two-watts/go/internal/events"
 )
 
 // Store is the subset of state.Store methods this package needs. Declared as
@@ -33,7 +35,7 @@ type Store interface {
 
 const (
 	skippedKey           = "update.skipped_version"
-	defaultCheckInterval = 6 * time.Hour
+	defaultCheckInterval = 1 * time.Hour
 	defaultHTTPTimeout   = 10 * time.Second
 	// staleThreshold flags an in-flight update as failed when the sidecar
 	// state file hasn't been refreshed within this window. Catches the
@@ -47,12 +49,15 @@ type Config struct {
 	Repo string
 	// CurrentVersion is the running binary's version (from main.Version).
 	CurrentVersion string
-	// CheckInterval is the probe cadence. 0 = 6 h.
+	// CheckInterval is the probe cadence. 0 = 1 h.
 	CheckInterval time.Duration
 	// SocketPath is where the sidecar listens. Empty disables Trigger.
 	SocketPath string
 	// StatusPath is the sidecar's state.json. Empty disables Status.
 	StatusPath string
+	// Bus receives an events.UpdateAvailable event whenever Check
+	// discovers a new, non-skipped release tag. Nil disables emission.
+	Bus *events.Bus
 
 	// Overrides for tests.
 	HTTPClient  *http.Client
@@ -109,8 +114,9 @@ type Checker struct {
 	cfg   Config
 	store Store
 
-	mu   sync.RWMutex
-	info Info
+	mu                 sync.RWMutex
+	info               Info
+	lastAnnouncedTag   string // dedupe: last tag we emitted UpdateAvailable for
 }
 
 // New constructs a Checker but does not start the background loop.
@@ -213,9 +219,6 @@ func (c *Checker) Check(ctx context.Context, force bool) (Info, error) {
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	// /releases/latest excludes drafts + prereleases by default, so the
-	// skip is defensive against an endpoint swap down the line.
 	if !rel.Draft && !rel.Prerelease && rel.TagName != "" {
 		c.info.Latest = rel.TagName
 		c.info.PublishedAt = rel.PublishedAt
@@ -226,7 +229,25 @@ func (c *Checker) Check(ctx context.Context, force bool) (Info, error) {
 	c.info.CheckedAt = c.cfg.Now()
 	c.info.Err = ""
 	c.reloadSkipLocked()
-	return c.info, nil
+	// Decide whether to emit under the lock, then publish outside it.
+	var announce *events.UpdateAvailable
+	if c.cfg.Bus != nil && c.info.UpdateAvailable && !c.info.Skipped &&
+		c.info.Latest != "" && c.info.Latest != c.lastAnnouncedTag {
+		c.lastAnnouncedTag = c.info.Latest
+		announce = &events.UpdateAvailable{
+			Version:         c.info.Latest,
+			PreviousVersion: c.info.Current,
+			ReleaseNotesURL: c.info.ReleaseNotesURL,
+			PublishedAt:     c.info.PublishedAt,
+			At:              c.cfg.Now(),
+		}
+	}
+	info := c.info
+	c.mu.Unlock()
+	if announce != nil {
+		c.cfg.Bus.Publish(*announce)
+	}
+	return info, nil
 }
 
 func (c *Checker) recordErr(err error) (Info, error) {

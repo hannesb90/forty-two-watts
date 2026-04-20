@@ -96,10 +96,17 @@
       for (var ei = 0; ei < nc.events.length; ei++) {
         var rule = nc.events[ei];
         var def = defaults[rule.type] || {};
-        // driver_recovered has no threshold_s knob on the backend — it
-        // fires within 30 s of telemetry resuming. Showing a field that
-        // does nothing would mislead; show a small note instead.
-        var usesThreshold = rule.type !== "driver_recovered";
+        // Only driver_offline uses threshold_s on the backend. Other
+        // event types (driver_recovered fires within 30 s of telemetry
+        // resuming; update_available fires when a new release is
+        // discovered) would show a field that does nothing — skip it
+        // and add a small note instead.
+        var usesThreshold = rule.type === "driver_offline";
+        var noThresholdNote = rule.type === "driver_recovered"
+          ? "Fires within 30 s of telemetry resuming — no threshold configurable."
+          : rule.type === "update_available"
+            ? "Fires when a new release is discovered — no threshold configurable."
+            : "This event type has no threshold.";
         html += '<fieldset><legend>' + (rule.type || "event #" + ei) + '</legend>' +
           '<label><input type="checkbox" data-checkbox-path="notifications.events.' + ei + '.enabled"' + (rule.enabled ? ' checked' : '') + '> Enabled</label>';
         if (usesThreshold) {
@@ -112,7 +119,7 @@
             '</div></div>';
         } else {
           html += '<p style="color:var(--text-dim);font-size:0.75rem;margin:6px 0">' +
-            'Fires within 30 s of telemetry resuming — no threshold configurable.' +
+            noThresholdNote +
             '</p>' +
             field("Priority (0–5)", "notifications.events." + ei + ".priority", "number", 3,
               "0 uses the default priority above.");
@@ -141,7 +148,9 @@
         '<ftw-notif-test-button label="Send test notification"></ftw-notif-test-button>' +
         '</fieldset>' +
         '<p style="color:var(--text-dim);font-size:0.8rem;margin-top:8px">' +
-        'Template fields: {{.Device}}, {{.Make}}, {{.Serial}}, {{.Duration}}, {{.DurationS}}, {{.EventType}}, {{.Timestamp}}.' +
+        'Template fields — driver events: {{.Device}}, {{.Make}}, {{.Serial}}, {{.Duration}}, {{.DurationS}}. ' +
+        'update_available: {{.Version}}, {{.PreviousVersion}}, {{.ReleaseURL}}. ' +
+        'Always: {{.EventType}}, {{.Timestamp}}.' +
         '</p>';
       return html;
     },

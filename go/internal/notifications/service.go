@@ -34,6 +34,7 @@ import (
 const (
 	EventDriverOffline   = "driver_offline"
 	EventDriverRecovered = "driver_recovered"
+	EventUpdateAvailable = "update_available"
 )
 
 // Defaults for a freshly-seeded rule.
@@ -48,6 +49,9 @@ func DefaultRules() []config.NotificationRule {
 	return []config.NotificationRule{
 		{Type: EventDriverOffline, Enabled: false, ThresholdS: DefaultThresholdS, Priority: 4, CooldownS: DefaultCooldownS},
 		{Type: EventDriverRecovered, Enabled: false, Priority: 3, CooldownS: 0},
+		// New releases are infrequent — cooldown keeps us from re-firing
+		// if a probe flaps the same tag after a brief network blip.
+		{Type: EventUpdateAvailable, Enabled: false, Priority: 3, CooldownS: 3600},
 	}
 }
 
@@ -224,6 +228,64 @@ func (s *Service) Subscribe(bus *events.Bus) {
 			}
 		}
 	})
+	bus.Subscribe(events.KindUpdateAvailable, func(e events.Event) {
+		ev, ok := e.(events.UpdateAvailable)
+		if !ok {
+			return
+		}
+		// Dispatch in a goroutine for the same reason as HealthTick —
+		// the bus is synchronous and Publish can block up to 10 s.
+		go s.handleUpdateAvailable(ev)
+	})
+}
+
+// handleUpdateAvailable dispatches a notification for a newly-discovered
+// release, honoring the update_available rule's enabled/priority/
+// cooldown settings. Keyed per Version so a new release isn't blocked
+// by the previous one's cooldown.
+func (s *Service) handleUpdateAvailable(ev events.UpdateAvailable) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.cfg == nil || !s.cfg.Enabled {
+		s.mu.Unlock()
+		return
+	}
+	rule, ok := findRule(s.cfg.Events, EventUpdateAvailable)
+	if !ok || !rule.Enabled {
+		s.mu.Unlock()
+		return
+	}
+	cfg := s.cfg
+	key := EventUpdateAvailable + "|" + ev.Version
+	now := s.now()
+	if rule.CooldownS > 0 {
+		if last, ok := s.lastFired[key]; ok && now.Sub(last) < time.Duration(rule.CooldownS)*time.Second {
+			s.mu.Unlock()
+			return
+		}
+	}
+	s.lastFired[key] = now
+	s.mu.Unlock()
+
+	data := templateData{
+		EventType:       EventUpdateAvailable,
+		Timestamp:       ev.At.UTC().Format(time.RFC3339),
+		Version:         ev.Version,
+		PreviousVersion: ev.PreviousVersion,
+		ReleaseURL:      ev.ReleaseNotesURL,
+	}
+	s.dispatch(cfg, rule, data)
+}
+
+func findRule(rules []config.NotificationRule, eventType string) (config.NotificationRule, bool) {
+	for _, r := range rules {
+		if r.Type == eventType {
+			return r, true
+		}
+	}
+	return config.NotificationRule{}, false
 }
 
 // Enabled reports whether the top-level toggle is on.
@@ -431,6 +493,10 @@ type templateData struct {
 	DurationS int
 	Duration  string
 	Timestamp string
+	// Populated for update_available events only.
+	Version         string
+	PreviousVersion string
+	ReleaseURL      string
 }
 
 func (s *Service) buildData(driver, eventType string, since time.Duration, now time.Time) templateData {
@@ -558,7 +624,7 @@ func EventDefaults() map[string]struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
 } {
-	types := []string{EventDriverOffline, EventDriverRecovered}
+	types := []string{EventDriverOffline, EventDriverRecovered, EventUpdateAvailable}
 	out := make(map[string]struct {
 		Title string `json:"title"`
 		Body  string `json:"body"`
@@ -578,6 +644,8 @@ func defaultTitleFor(eventType string) string {
 		return "forty-two-watts: {{.Device}} offline"
 	case EventDriverRecovered:
 		return "forty-two-watts: {{.Device}} recovered"
+	case EventUpdateAvailable:
+		return "forty-two-watts: update {{.Version}} available"
 	}
 	return "forty-two-watts: {{.EventType}}"
 }
@@ -588,6 +656,8 @@ func defaultBodyFor(eventType string) string {
 		return "{{.Device}} has not reported telemetry for {{.Duration}}."
 	case EventDriverRecovered:
 		return "{{.Device}} is reporting telemetry again."
+	case EventUpdateAvailable:
+		return "Version {{.Version}} is available (running {{.PreviousVersion}}). {{.ReleaseURL}}"
 	}
 	return "{{.EventType}} for {{.Device}}"
 }

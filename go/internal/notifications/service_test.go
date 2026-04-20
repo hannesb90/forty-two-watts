@@ -467,3 +467,43 @@ func TestNilPublisherNoPanic(t *testing.T) {
 		t.Fatalf("expected Failed=1 after nil-publisher dispatch, got %+v", st)
 	}
 }
+
+func TestUpdateAvailableDispatches(t *testing.T) {
+	cfg := baseCfg()
+	// Add an enabled update_available rule.
+	cfg.Events = append(cfg.Events, config.NotificationRule{
+		Type: EventUpdateAvailable, Enabled: true, Priority: 3, CooldownS: 3600,
+	})
+	pub := &fakePub{}
+	svc, _ := newSvc(cfg, pub)
+	bus := events.NewBus()
+	svc.Subscribe(bus)
+
+	bus.Publish(events.UpdateAvailable{
+		Version:         "v1.2.3",
+		PreviousVersion: "v1.2.2",
+		ReleaseNotesURL: "https://example/r/v1.2.3",
+		At:              time.Now(),
+	})
+	deadline := time.Now().Add(time.Second)
+	for len(pub.Messages()) < 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	msgs := pub.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 msg, got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0].Title, "v1.2.3") {
+		t.Errorf("title missing version: %q", msgs[0].Title)
+	}
+	if !strings.Contains(msgs[0].Body, "v1.2.2") {
+		t.Errorf("body missing previous version: %q", msgs[0].Body)
+	}
+
+	// Second emission with same version should be blocked by cooldown.
+	bus.Publish(events.UpdateAvailable{Version: "v1.2.3", At: time.Now()})
+	time.Sleep(50 * time.Millisecond)
+	if len(pub.Messages()) != 1 {
+		t.Fatalf("cooldown did not dedupe: got %d msgs", len(pub.Messages()))
+	}
+}
