@@ -140,11 +140,11 @@ body.ftw-next .header-right {
 }
 body.ftw-next .version {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--fg-muted);
-  padding: 4px 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  padding: 6px 12px;
+  border: 2px solid var(--fg-muted);
+  border-radius: 8px;
 }
 
 /* Green connection dot — wrap it in a white circular chip so the
