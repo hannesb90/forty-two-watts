@@ -372,7 +372,16 @@ body.ftw-next .fuse-phase-box .fuse-phase-bar {
   border-radius: 4px;
   overflow: hidden;
 }
-body.ftw-next .fuse-phase-fill,
+body.ftw-next .fuse-phase-fill {
+  /* Horizontal bar (default): width tracks --fill-pct set by
+     next-app.js; height fills the bar's 8 px thickness. The mobile
+     override below rotates this to width 100% + height varies so
+     the bar becomes a vertical column that fills upward. */
+  width: var(--fill-pct, 0%);
+  height: 100%;
+  background: var(--green-e);
+  transition: width 0.3s, height 0.3s, background 0.3s;
+}
 body.ftw-next .fuse-fill {
   height: 100%;
   background: var(--green-e);
@@ -814,3 +823,54 @@ html[data-theme="light"] body.ftw-next .status-bar {
    tokens above re-point them but a few hex fallbacks slip through in
    inline styles — use a readable dim for neutral text on light bg. */
 html[data-theme="light"] body.ftw-next .val-neutral { color: var(--fg); }
+
+/* ---- Battery-absence gating ----
+   When no driver reports bat_w, next-app.js flips body.no-battery on
+   and every element tagged .bat-only disappears: the two "Bat
+   charged" / "Bat discharged" energy tiles and the Plan chart's
+   Charge/Discharge/SoC legend entries. The plan.js canvas drawing
+   checks the same class to skip the SoC band + battery bars. */
+body.ftw-next.no-battery .bat-only { display: none !important; }
+
+/* ---- Fuse card — vertical bars on small screens ----
+   Desktop shows each phase as a separate card with a big current
+   read-out and a horizontal bar underneath; that stacks three tall
+   cards on phone widths, which hides the fuse row below the fold.
+   On <=600 px we collapse all three phases into a single row with
+   a tall vertical bar per phase so the whole fuse picture reads at
+   a glance without scrolling. */
+@media (max-width: 600px) {
+  body.ftw-next .fuse-phase-boxes {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  body.ftw-next .fuse-phase-box {
+    padding: 8px 8px 10px;
+    grid-template-columns: auto 1fr;
+    grid-template-rows: auto auto;
+    gap: 4px 8px;
+    align-items: start;
+  }
+  body.ftw-next .fuse-phase-box .fuse-phase-label {
+    grid-column: 2; grid-row: 1;
+    font-size: 10px;
+  }
+  body.ftw-next .fuse-phase-box .fuse-phase-val {
+    grid-column: 2; grid-row: 2;
+    font-size: 0.95rem;
+    line-height: 1.1;
+  }
+  body.ftw-next .fuse-phase-box .fuse-phase-bar {
+    grid-column: 1; grid-row: 1 / span 2;
+    /* Vertical bar: narrow strip, tall enough to read percentage
+       differences across phases. Fill rises from the bottom. */
+    width: 10px;
+    height: 48px;
+    display: flex;
+    align-items: flex-end;
+  }
+  body.ftw-next .fuse-phase-fill {
+    width: 100%;
+    height: var(--fill-pct, 0%);
+  }
+}
