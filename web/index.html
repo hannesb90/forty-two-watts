@@ -5,12 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>forty-two-watts — next</title>
   <link rel="icon" type="image/jpeg" href="/logo.jpg">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-        crossorigin="">
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-          crossorigin=""></script>
+  <!-- Leaflet is lazy-loaded by settings.js when the Weather tab opens
+       the OSM picker — it's not needed on the main dashboard and
+       shipping ~150 KB of JS + CSS to every /status-poll tab is a
+       waste. See web/settings.js::loadLeaflet(). -->
   <!-- Type: Inter preferred for UI, JetBrains Mono for tabular numerics.
        No external font CDN — the Pi has to boot + render even without
        internet; theme.css's --sans / --mono stacks fall back to the OS's
