@@ -1,51 +1,84 @@
 // <ftw-energy-flow> — hero diagram for /next.
 //
-// Layout (site convention: +ve = INTO the site):
+// Planet/sun layout. The HOUSE sits at the center (the sun), and every
+// other device — PV inverters, batteries, grid, EV chargers, whatever
+// future category — is a "planet" that orbits it. A planet declares
+// which CORNER it belongs to:
 //
-//   [pv₀] [pv₁] [pv₂]            TOP row  — solar cluster, horizontal
-//              │
-//              ▼
-//   [grid] ───►[HOUSE]───►[bat₀]  MIDDLE  — grid left, battery column right
-//                      │ [bat₁]
-//                      │ [bat₂]
-//                      ▼
-//              [ev]                BOTTOM — EV single slot
+//       top-left  (225°)       top-right (315°)
+//                    ╲       ╱
+//                     ╲     ╱
+//                   ┌──HOUSE──┐
+//                     ╱     ╲
+//                    ╱       ╲
+//     bottom-left (135°)       bottom-right (45°)
+//
+// Corners are hard-wired at 45° diagonals so the overall X is uniform
+// no matter how many planets each corner holds. Adding a second (or
+// third) planet at the same corner makes the earlier ones scoot aside:
+// they cluster along an arc centered on that corner's anchor angle,
+// same orbit radius, so every power beam stays the same length.
+// When no planets report at a corner, a "no data" placeholder fills
+// it so the X reads as complete even on first paint.
 //
 // Flow edges carry two simultaneous animations:
 //   1. A dashed, blurred stroke whose dash-offset animates via CSS —
 //      gives a "current flowing" feel without redrawing any DOM.
-//   2. Three particle circles riding the edge via <animateMotion>, spaced
-//      by 1/3 of the cycle so the flow looks continuous. Speed scales
-//      inversely with |kW| / maxKw — more power, faster particles.
+//   2. Particle circles riding the edge via a single rAF loop, with
+//      damped-oscillator perpendicular motion so the spray looks
+//      turbulent rather than a rotating screw. Speed scales with |kW|.
 // Both effects are skipped when |kW| < 50 W so idle edges read as still.
 //
 // Update pattern — next-app.js calls `setReadings(...)` each status poll
-// with the full multi-driver payload. The component never introspects
-// /api/status itself; keep the transformation in next-app.js so all
-// driver-name logic stays in one place.
+// with a fully-resolved planet list. The component never introspects
+// /api/status itself and has no knowledge of driver roles — all
+// role→corner/color/sub-text logic lives in the caller.
 //
 //   flow.setReadings({
-//     grid: 0.5, load: 1.2, ev: 0,
-//     pvs:       [{ name: "solaredge", kw: -5.3 }],
-//     batteries: [{ name: "pixii",     kw: 2.2, soc: 78 }],
+//     load: 1.2,
+//     planets: [
+//       { id: "grid",     corner: "bottom-left",  title: "GRID",
+//         kw:  0.5, toHub: true,  color: "var(--red-e)", sub: "importing" },
+//       { id: "pv-east",  corner: "top-left",     title: "SOLAR", name: "east",
+//         kw:  3.1, toHub: true,  color: "var(--amber)", sub: "generating" },
+//       { id: "bat-main", corner: "top-right",    title: "BATTERY",
+//         kw:  2.2, toHub: false, color: "var(--cyan)",  sub: "charging", soc: 78 },
+//       { id: "ev",       corner: "bottom-right", title: "EV CHARGER",
+//         kw:  3.7, toHub: false, color: "var(--green-e)", sub: "charging" },
+//     ],
 //   });
 
 import { FtwElement } from "./ftw-element.js";
 
-const W = 1000, H = 530;
-const CX = W / 2, CY = H / 2;
-const HUB_R = 64;
-const BOX_W = 170, BOX_H = 78;
-const GAP_H = 34;   // horizontal gap between stacked PV boxes
-const GAP_V = 14;   // vertical gap between stacked battery boxes
-// TOP_Y / BOT_Y picked so the vertical beam is ~107 px between box edge
-// and hub edge — 30% longer than the earlier 82 px. Extra room lets
-// the particle fountain spiral visibly into the hub instead of being
-// crammed into a short run.
-const TOP_Y = 55;
-const BOT_Y = H - 55;
-const LEFT_X = 150;
-const RIGHT_X = W - 150;
+// World width is fixed at 1000; CX is always at the center of whatever
+// crop we render. The viewBox HEIGHT (and CY = H/2) are computed per
+// render — they grow with the largest cluster size so the arc never
+// pushes a planet outside the box. Keeping H dynamic is what lets the
+// hero card grow when the user adds a second/third PV/battery/etc.
+const W = 1000;
+const CX = W / 2;
+// Baseline height used when no cluster has more than one planet — also
+// the floor for the dynamic computation so the diagram never shrinks
+// below the single-device size.
+const H_BASE = 580;
+
+// Corner → anchor angle in screen coordinates (0°=east, 90°=south).
+// Fixed at exactly 45° so the whole diagram reads as a uniform X
+// regardless of how many planets live at any corner.
+const CORNER_ANGLE = {
+  "top-left":     -3 * Math.PI / 4, // 225°
+  "top-right":    -Math.PI / 4,     // 315°
+  "bottom-right":  Math.PI / 4,     //  45°
+  "bottom-left":   3 * Math.PI / 4, // 135°
+};
+// Default title shown when a corner has no planets reporting yet.
+// Keeps the first-paint X intact; updated as soon as drivers push.
+const CORNER_PLACEHOLDER_TITLE = {
+  "top-left":     "SOLAR",
+  "top-right":    "BATTERY",
+  "bottom-right": "EV CHARGER",
+  "bottom-left":  "GRID",
+};
 
 class FtwEnergyFlow extends FtwElement {
   static styles = `
@@ -56,7 +89,7 @@ class FtwEnergyFlow extends FtwElement {
         var(--hero-bg-bot) 100%);
       border: 1px solid var(--line);
       border-radius: var(--radius-lg);
-      padding: 14px 28px 6px;
+      padding: 20px 28px;
       position: relative;
       overflow: hidden;
     }
@@ -70,30 +103,35 @@ class FtwEnergyFlow extends FtwElement {
     }
     .title {
       font-family: var(--mono);
-      font-size: 13px;
+      font-size: 19px;
       font-weight: 600;
       letter-spacing: 0.22em;
       text-transform: uppercase;
       color: var(--fg);
       text-align: center;
       padding: 2px 0;
-      margin-bottom: 2px;
+      margin-top: 10px;
+      margin-bottom: 56px;
       position: relative;
     }
     svg {
       width: 100%;
-      height: 490px;
+      height: calc(var(--efl-h-factor, 1) * 642px);
       display: block;
     }
     /* SVG text classes — font-size values are in viewBox units (the SVG
        scales with container width via preserveAspectRatio), so at narrow
        viewports the default sizes render too small. Media queries below
-       bump them back into legible range on small screens. */
-    .sv-node-title { font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.08em; }
-    .sv-node-value { font-family: var(--mono); font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
-    .sv-node-sub   { font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em; }
-    .sv-hub-value  { font-family: var(--mono); font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
-    .sv-hub-label  { font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; }
+       bump them back into legible range on small screens. Desktop
+       defaults are +20% over the historic baseline so the hero reads
+       as the focal point it's meant to be on larger screens. */
+    .sv-node-title { font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: 0.08em; }
+    .sv-node-value { font-family: var(--mono); font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+    .sv-node-sub   { font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em; }
+    .sv-hub-value  { font-family: var(--mono); font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .sv-hub-label  { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; }
+    .ef-clickable { cursor: pointer; outline: none; }
+    .ef-clickable:focus-visible > circle { stroke-width: 3; filter: drop-shadow(0 0 4px var(--accent, #6cf)); }
     /* One dash cycle advances by exactly (dash + gap). The fwd/rev pair
        keeps direction declarative — we flip the animation-name, not the
        path, so swapping a source→sink edge (grid export, battery
@@ -106,8 +144,9 @@ class FtwEnergyFlow extends FtwElement {
       animation: ef-spin 24s linear infinite;
     }
     @media (max-width: 900px) {
-      :host { padding: 10px 12px 4px; }
-      svg { height: 465px; }
+      :host { padding: 20px 12px; }
+      .title { margin-bottom: 8px; }
+      svg { height: calc(var(--efl-h-factor, 1) * 510px); }
       .sv-node-title { font-size: 13px; }
       .sv-node-value { font-size: 24px; }
       .sv-node-sub   { font-size: 13px; }
@@ -115,7 +154,7 @@ class FtwEnergyFlow extends FtwElement {
       .sv-hub-label  { font-size: 11px; }
     }
     @media (max-width: 600px) {
-      svg { height: 420px; }
+      svg { height: calc(var(--efl-h-factor, 1) * 460px); }
       .sv-node-title { font-size: 18px; }
       .sv-node-value { font-size: 30px; }
       .sv-node-sub   { font-size: 16px; }
@@ -128,10 +167,7 @@ class FtwEnergyFlow extends FtwElement {
     super();
     // Start with empty clusters; render shows placeholder slots until the
     // first setReadings() push arrives from next-app.js.
-    this._readings = {
-      grid: 0, load: 0, ev: 0,
-      pvs: [], batteries: [],
-    };
+    this._readings = { load: 0, planets: [] };
     // JS-driven particle system — one rAF loop animates every "electron"
     // independently. Each particle has its own amp/phase/freq/speed plus
     // a low-frequency 2D noise term, so even at high particle counts
@@ -160,26 +196,47 @@ class FtwEnergyFlow extends FtwElement {
     if (this._mq) {
       this._mq.addEventListener("change", this._onMqChange);
     }
+    // Generic viewport listener — covers desktop window resizes and
+    // device rotations that don't cross the 600px matchMedia threshold
+    // (which `_mq` already handles). Throttled via rAF so a continuous
+    // resize-drag triggers at most one re-render per frame.
+    this._onResize = () => {
+      if (this._resizeRaf) return;
+      this._resizeRaf = requestAnimationFrame(() => {
+        this._resizeRaf = 0;
+        this.update();
+      });
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("resize", this._onResize, { passive: true });
+      window.addEventListener("orientationchange", this._onResize, { passive: true });
+    }
   }
 
   disconnectedCallback() {
     if (this._rafId) cancelAnimationFrame(this._rafId);
     this._rafId = null;
     this._particles = [];
+    if (this._resizeRaf) {
+      cancelAnimationFrame(this._resizeRaf);
+      this._resizeRaf = 0;
+    }
     if (this._mq) {
       this._mq.removeEventListener("change", this._onMqChange);
     }
+    if (typeof window !== "undefined" && this._onResize) {
+      window.removeEventListener("resize", this._onResize);
+      window.removeEventListener("orientationchange", this._onResize);
+    }
   }
 
-  // Bulk setter — preferred update path. Scalars merge; arrays replace
-  // when provided. Passing `undefined` for an array leaves the previous
-  // cluster intact (useful during transient /api/status errors).
+  // Bulk setter — preferred update path. `load` merges; `planets`
+  // replaces the whole list when provided. Passing `undefined` for
+  // `planets` leaves the previous cluster intact (useful during
+  // transient /api/status errors so the diagram doesn't blank out).
   setReadings(r) {
-    if (r.grid != null) this._readings.grid = r.grid;
-    if (r.load != null) this._readings.load = r.load;
-    if (r.ev   != null) this._readings.ev   = r.ev;
-    if (Array.isArray(r.pvs))       this._readings.pvs       = r.pvs;
-    if (Array.isArray(r.batteries)) this._readings.batteries = r.batteries;
+    if (r.load != null)         this._readings.load    = r.load;
+    if (Array.isArray(r.planets)) this._readings.planets = r.planets;
     this.update();
   }
 
@@ -221,6 +278,30 @@ class FtwEnergyFlow extends FtwElement {
     if (this._rafId) {
       cancelAnimationFrame(this._rafId);
       this._rafId = null;
+    }
+    // Delegated click on the SVG — one listener per render covers every
+    // planet group that opted in via data-role. The handler dispatches
+    // `ftw-planet-click` so callers (next-app.js) can route per-role
+    // (e.g. ev → open EV modal scoped to this driver).
+    const svg = this.shadowRoot.querySelector('svg');
+    if (svg) {
+      const fire = (g) => {
+        const role = g.getAttribute('data-role') || '';
+        const name = g.getAttribute('data-name') || '';
+        const id   = g.getAttribute('data-id')   || '';
+        this.dispatchEvent(new CustomEvent('ftw-planet-click', {
+          detail: { role, name, id }, bubbles: true, composed: true,
+        }));
+      };
+      svg.addEventListener('click', (e) => {
+        const g = e.target.closest && e.target.closest('.ef-clickable');
+        if (g) fire(g);
+      });
+      svg.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        const g = e.target.closest && e.target.closest('.ef-clickable');
+        if (g) { e.preventDefault(); fire(g); }
+      });
     }
     const nodes = this.shadowRoot.querySelectorAll('.ef-p');
     if (!nodes.length || !this._particles.length) return;
@@ -304,102 +385,124 @@ class FtwEnergyFlow extends FtwElement {
   }
 
   render() {
-    const { grid, load, ev } = this._readings;
+    const { load } = this._readings;
 
-    // Show one placeholder box per side when no drivers report — keeps
-    // the layout stable during first paint + disables flow animation.
-    const pvList = this._readings.pvs.length
-      ? this._readings.pvs
-      : [{ name: "", kw: 0, placeholder: true }];
-    const batList = this._readings.batteries.length
-      ? this._readings.batteries
-      : [{ name: "", kw: 0, soc: null, placeholder: true }];
+    // Two tiers of base parameters. Desktop keeps the full 0..1000 viewBox
+    // with larger circles + hub; compact crops to 180..820 and shrinks the
+    // base orbit so phone widths render legibly. Both tiers are FLOORS:
+    // the dynamic-sizing block below grows orbitR + viewBox H/W when any
+    // corner holds 2+ planets so the arc never pushes a node off-canvas.
+    const tier = this._compact
+      ? { vbX: 180, vbW: 640, orbitR: 268, baseR: 86, hubR: 95 }
+      : { vbX: 0,   vbW: W,   orbitR: 288, baseR: 84, hubR: 99 };
 
-    // × layout with circular nodes at every viewport size. Two tiers of
-    // parameters: desktop keeps the full 0..1000 viewBox with larger
-    // circles + hub; compact crops to 180..820 and shrinks the
-    // geometry so the uniform zoom from preserveAspectRatio lands
-    // readable at phone widths. Hub text y-offsets are tier-specific
-    // so the load value sits visually centered between the house icon
-    // and the CONSUMING label at both sizes.
-    const P = this._compact
-      ? {
-          vbX: 180, vbW: 640,
-          leftX: 285, rightX: 715,
-          topY: 90, botY: 440,
-          baseR: 86, hubR: 95,
-          hubIconY: CY - 49, hubValueY: CY + 10, hubLabelY: CY + 34,
-        }
-      : {
-          vbX: 0, vbW: W,
-          leftX: 240, rightX: 760,
-          topY: 130, botY: 400,
-          baseR: 84, hubR: 99,
-          hubIconY: CY - 50, hubValueY: CY + 10, hubLabelY: CY + 36,
-        };
+    // Group planets by corner. Missing corners get a placeholder so
+    // the X silhouette is complete on first paint even before any
+    // drivers report.
+    const groups = {
+      "top-left": [], "top-right": [],
+      "bottom-right": [], "bottom-left": [],
+    };
+    for (const p of this._readings.planets) {
+      if (groups[p.corner]) groups[p.corner].push(p);
+    }
+    for (const c of Object.keys(groups)) {
+      if (groups[c].length === 0) {
+        groups[c].push({
+          id: `_placeholder-${c}`, corner: c,
+          title: CORNER_PLACEHOLDER_TITLE[c], name: null,
+          kw: 0, toHub: true,
+          color: "var(--fg-muted)", sub: "no data", soc: null,
+          placeholder: true,
+        });
+      }
+    }
+    const maxN = Math.max(1, ...Object.values(groups).map(g => g.length));
 
-    // Multi-device cluster in the PV (top-left) quadrant. Bounds run
-    // from the viewBox left edge to the hub's left edge; clusterAt
-    // shrinks the circles to fit n side-by-side and centers the row
-    // within those bounds. Single-device keeps baseR and sits on the
-    // corner anchor for the classic × silhouette.
-    const pvC = clusterAt(
-      pvList.length, P.leftX, P.topY, P.baseR,
-      P.vbX + 10, CX - P.hubR - 18,
-    );
-    // Battery: top-right quadrant, hub-left to viewBox-right.
-    const batC = clusterAt(
-      batList.length, P.rightX, P.topY, P.baseR,
-      CX + P.hubR + 18, P.vbX + P.vbW - 10,
-    );
-    const gridPos = { x: P.leftX,  y: P.botY };
-    const evPos   = { x: P.rightX, y: P.botY };
+    // -- Dynamic orbit + container sizing --------------------------------
+    // For N>=3 the arc would either spill past 60° (clusterArc's maxSpan)
+    // or shrink baseR — so we grow orbitR instead, keeping every node
+    // full-sized. For N=1 or 2 the natural step already fits and orbitR
+    // stays at the tier floor.
+    const gap = 16;
+    const maxSpan = Math.PI / 3;
+    let orbitR = tier.orbitR;
+    if (maxN >= 3) {
+      const step = maxSpan / (maxN - 1);
+      const required = (2 * tier.baseR + gap) / (2 * Math.sin(step / 2));
+      orbitR = Math.max(orbitR, Math.ceil(required));
+    }
 
-    // Build all edges: each entry carries geometry + magnitude + direction.
-    const edges = [];
-    pvList.forEach((pv, i) => {
-      const magnitude = Math.max(0, -pv.kw);
-      edges.push(edge(
-        `pv-${i}`,
-        pvC.positions[i], gridPos /* unused for diagonal */,
-        "top", +1,
-        magnitude,
-        "var(--amber)",
-        !pv.placeholder && magnitude > 0.05,
-        0, 0, /* boxW/boxH unused in diagonal */ true, pvC.r, P.hubR,
-      ));
+    // Recompute the actual step + half-span at this orbitR (mirrors the
+    // formula clusterArc uses), so we know how far the outermost arc
+    // position lies from the corner anchor.
+    const naturalStep = 2 * Math.asin(Math.min(1, (2 * tier.baseR + gap) / (2 * orbitR)));
+    const stepActual = maxN <= 1 ? 0 : Math.min(naturalStep, maxSpan / (maxN - 1));
+    const halfSpan = ((maxN - 1) * stepActual) / 2;
+
+    // Worst-case x/y offsets from CX/CY across all four corners (each
+    // anchor ± halfSpan). Whichever planet sits closest to the
+    // top/bottom/left/right of the world drives the container size.
+    const margin = 12;
+    const corners = Object.values(CORNER_ANGLE);
+    let maxYOff = 0, maxXOff = 0;
+    for (const a0 of corners) {
+      for (const da of [-halfSpan, +halfSpan]) {
+        const ay = Math.abs(orbitR * Math.sin(a0 + da));
+        const ax = Math.abs(orbitR * Math.cos(a0 + da));
+        if (ay > maxYOff) maxYOff = ay;
+        if (ax > maxXOff) maxXOff = ax;
+      }
+    }
+    const Hdyn = Math.max(H_BASE, Math.ceil(2 * (maxYOff + tier.baseR + margin)));
+    const Wneeded = Math.ceil(2 * (maxXOff + tier.baseR + margin));
+    let vbW = tier.vbW, vbX = tier.vbX;
+    if (Wneeded > vbW) {
+      // Hub stays at world x=500; recenter the crop around it.
+      vbW = Wneeded;
+      vbX = Math.round(W / 2 - vbW / 2); // negative is fine — the viewBox can extend past world bounds
+    }
+    // Scale the rendered CSS height so the SVG keeps its on-screen
+    // visual proportions as the viewBox grows. CSS picks the per-tier
+    // base (535/510/460) via media queries; we just multiply.
+    this.style.setProperty("--efl-h-factor", (Hdyn / H_BASE).toFixed(3));
+
+    // Per-render layout struct. CY now varies — every helper that used
+    // to read module-level CY now takes (cx, cy) explicitly.
+    const cy = Hdyn / 2;
+    const P = {
+      vbX, vbW, H: Hdyn, cy,
+      orbitR, baseR: tier.baseR, hubR: tier.hubR,
+      hubIconY: cy - (this._compact ? 49 : 50),
+      hubValueY: cy + 10,
+      hubLabelY: cy + (this._compact ? 34 : 36),
+    };
+    // -- /Dynamic sizing -------------------------------------------------
+
+    // Per-corner arc placement. Every corner uses the same orbitR so
+    // beams are identical-length radial lines.
+    const placed = [];
+    for (const c of Object.keys(groups)) {
+      const g = groups[c];
+      const pl = clusterArc(g.length, CX, P.cy, P.orbitR, CORNER_ANGLE[c], P.baseR);
+      g.forEach((planet, i) => {
+        placed.push({ ...planet,
+          _pos: pl.positions[i], _r: pl.r, _groupSize: g.length });
+      });
+    }
+
+    // Build edges. Each planet owns one radial beam; `toHub` decides
+    // particle direction (house-inward vs house-outward).
+    const edges = placed.map(p => {
+      const kwAbs = Math.abs(p.kw);
+      return {
+        id: p.id,
+        ...radialEndpoints(p._pos, p._r, P.hubR, p.toHub, CX, P.cy),
+        kw: kwAbs,
+        color: p.color,
+        active: !p.placeholder && kwAbs > 0.05,
+      };
     });
-    edges.push(edge(
-      "grid",
-      gridPos, gridPos,
-      "left",
-      grid >= 0 ? +1 : -1,
-      Math.abs(grid),
-      grid >= 0 ? "var(--red-e)" : "var(--green-e)",
-      Math.abs(grid) > 0.05,
-      0, 0, true, P.baseR, P.hubR,
-    ));
-    batList.forEach((bat, i) => {
-      edges.push(edge(
-        `bat-${i}`,
-        batC.positions[i], batC.positions[i],
-        "right",
-        bat.kw >= 0 ? +1 : -1,
-        Math.abs(bat.kw),
-        "var(--cyan)",
-        !bat.placeholder && Math.abs(bat.kw) > 0.05,
-        0, 0, true, batC.r, P.hubR,
-      ));
-    });
-    edges.push(edge(
-      "ev",
-      evPos, evPos,
-      "bottom", +1,
-      Math.max(0, ev),
-      "var(--white-s)",
-      ev > 0.05,
-      0, 0, true, P.baseR, P.hubR,
-    ));
 
     const maxKw = Math.max(0.5, ...edges.map(e => e.kw));
     // Stash the particle-param list on the instance so afterRender()
@@ -409,56 +512,30 @@ class FtwEnergyFlow extends FtwElement {
     this._particles = [];
     const edgesSvg = edges.map(e => renderEdge(e, maxKw, this._particles)).join("");
 
-    // Every node is a circle now — renderNode (rectangular) is retired.
-    const pvNodes = pvList.map((pv, i) =>
+    // Nodes. The driver name only appears (as a second title line) when
+    // >1 planet shares the corner — keeps single-device rigs clean.
+    // Clickable planets are tagged with data-* attrs picked up by the
+    // delegated SVG click listener wired in afterRender().
+    const nodesSvg = placed.map(p =>
       renderCircleNode({
-        pos: pvC.positions[i],
-        // Solar shows POSITIVE kW — sign flip is display-only, all
-        // internal state (chartHistory, math) stays on site convention.
-        value: pv.placeholder ? "—" : fmtKw(-pv.kw),
-        title: labelWithName("SOLAR", pv.name, pvList.length),
-        sub: pv.placeholder ? "no data" : (pv.kw < -0.05 ? "generating" : "idle"),
-        color: !pv.placeholder && pv.kw < -0.05 ? "var(--amber)" : "var(--fg-muted)",
-        radius: pvC.r,
+        pos: p._pos,
+        value: p.placeholder ? "—" : fmtKw(p.kw),
+        title: p.title,
+        nameLabel: p._groupSize > 1 && p.name ? p.name.toUpperCase() : null,
+        sub: p.sub,
+        color: p.color,
+        soc: p.placeholder ? null : p.soc,
+        radius: p._r,
+        clickable: !p.placeholder && !!p.role,
+        role: p.role || "",
+        name: p.name || "",
+        id: p.id,
       })
     ).join("");
-
-    const gridNode = renderCircleNode({
-      pos: gridPos,
-      value: fmtKw(grid),
-      title: "GRID",
-      sub: Math.abs(grid) < 0.05 ? "balanced" : (grid >= 0 ? "importing" : "exporting"),
-      color: Math.abs(grid) < 0.05 ? "var(--fg-muted)" :
-             (grid >= 0 ? "var(--red-e)" : "var(--green-e)"),
-      radius: P.baseR,
-    });
-
-    const batNodes = batList.map((bat, i) =>
-      renderCircleNode({
-        pos: batC.positions[i],
-        value: bat.placeholder ? "—" : fmtKw(bat.kw),
-        title: labelWithName("BATTERY", bat.name, batList.length),
-        sub: bat.placeholder ? "no data" :
-             (Math.abs(bat.kw) < 0.05 ? "idle" :
-              (bat.kw >= 0 ? "charging" : "discharging")),
-        color: bat.placeholder ? "var(--fg-muted)" : "var(--cyan)",
-        soc: bat.placeholder ? null : bat.soc,
-        radius: batC.r,
-      })
-    ).join("");
-
-    const evNode = renderCircleNode({
-      pos: evPos,
-      value: fmtKw(ev),
-      title: "EV CHARGER",
-      sub: ev > 0.05 ? "charging" : "idle",
-      color: ev > 0.05 ? "var(--green-e)" : "var(--white-s)",
-      radius: P.baseR,
-    });
 
     return `
       <div class="title">Energy balance</div>
-      <svg viewBox="${P.vbX} 0 ${P.vbW} ${H}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      <svg viewBox="${P.vbX} 0 ${P.vbW} ${P.H}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
         <defs>
           <radialGradient id="ef-hub" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stop-color="oklch(0.85 0.18 var(--accent-hue))" stop-opacity="0.55"/>
@@ -479,16 +556,16 @@ class FtwEnergyFlow extends FtwElement {
           </filter>
         </defs>
 
-        <circle cx="${CX}" cy="${CY}" r="200" fill="url(#ef-hub)"/>
+        <circle cx="${CX}" cy="${P.cy}" r="200" fill="url(#ef-hub)"/>
 
         ${edgesSvg}
 
         <!-- HOUSE / hub: load reading lives here -->
         <g>
-          <circle cx="${CX}" cy="${CY}" r="${P.hubR}"
+          <circle cx="${CX}" cy="${P.cy}" r="${P.hubR}"
                   fill="var(--hero-house-fill)"
                   stroke="var(--hero-house-stroke)" stroke-width="1.5"/>
-          <circle class="ring" cx="${CX}" cy="${CY}" r="${P.hubR - 8}"
+          <circle class="ring" cx="${CX}" cy="${P.cy}" r="${P.hubR - 8}"
                   fill="none"
                   stroke="var(--hero-house-ring)" stroke-width="1"
                   stroke-dasharray="2 4"/>
@@ -508,10 +585,7 @@ class FtwEnergyFlow extends FtwElement {
           </text>
         </g>
 
-        ${pvNodes}
-        ${gridNode}
-        ${batNodes}
-        ${evNode}
+        ${nodesSvg}
       </svg>
     `;
   }
@@ -519,102 +593,64 @@ class FtwEnergyFlow extends FtwElement {
 
 // ---------- geometry + edge helpers ----------
 
-// Multi-device horizontal cluster inside the × layout's corner
-// quadrant. For n = 1 the device sits on the corner anchor with full
-// baseR. For n > 1 the circles shrink so they fit between the given
-// [leftBound, rightBound] (inner viewBox edge and the hub's edge),
-// then sit evenly spaced and centered in that span. The radius floor
-// keeps multi-device circles readable even when bounds are tight.
-function clusterAt(n, anchorX, anchorY, baseR, leftBound, rightBound) {
+// Place N nodes on a hub-centered circle of radius `orbitR` along an
+// arc around `anchorAngle` (the polar angle that points to the
+// quadrant's corner). Every node sits on the same circle, so its
+// radial beam to the hub is the same length as every other satellite's
+// beam — the "circle around the house" layout.
+//
+// Sizing:
+//   • n === 1 → node sits exactly on the anchor with full baseR.
+//   • n  >= 2 → angular step is whatever keeps adjacent circles gap
+//               apart on the orbit (chord = 2*baseR + gap). If that
+//               would spread the cluster past `maxSpan`, we cap the
+//               span and shrink nodeR so non-overlap still holds.
+//
+// `maxSpan` (≈60°) keeps the arc comfortably inside its quadrant — PV
+// stops short of the grid anchor, battery stops short of EV — so the
+// four regions stay visually distinct even with many devices.
+function clusterArc(n, cx, cy, orbitR, anchorAngle, baseR) {
   if (n <= 1) {
-    return { positions: [{ x: anchorX, y: anchorY }], r: baseR };
+    return { positions: [polar(cx, cy, orbitR, anchorAngle)], r: baseR };
   }
-  const gap = 14;
-  const span = rightBound - leftBound;
-  // Max radius that fits n circles + (n-1) gaps inside span:
-  //   n * 2r + (n-1) * gap <= span
-  const maxR = Math.floor((span - (n - 1) * gap) / (2 * n));
-  const r = Math.max(34, Math.min(Math.floor(baseR * 0.85), maxR));
-  const stride = 2 * r + gap;
-  const cx = (leftBound + rightBound) / 2;
-  const half = ((n - 1) * stride) / 2;
-  const positions = Array.from({ length: n }, (_, i) => ({
-    x: cx - half + i * stride,
-    y: anchorY,
-  }));
+  const gap = 16;
+  const maxSpan = Math.PI / 3; // 60°
+  const idealChord = 2 * baseR + gap;
+  let step = 2 * Math.asin(Math.min(1, idealChord / (2 * orbitR)));
+  let r = baseR;
+  if (step * (n - 1) > maxSpan) {
+    step = maxSpan / (n - 1);
+    const chord = 2 * orbitR * Math.sin(step / 2);
+    r = Math.max(32, Math.floor((chord - gap) / 2));
+  }
+  const half = ((n - 1) * step) / 2;
+  const positions = Array.from({ length: n }, (_, i) =>
+    polar(cx, cy, orbitR, anchorAngle - half + i * step),
+  );
   return { positions, r };
 }
 
-// Spread N items along a horizontal axis, centered on (anchorX, fixedY).
-// Spacing is box-width + gap so boxes never overlap, even at N=3+.
-function clusterH(n, anchorX, fixedY, boxW, gap) {
-  const stride = boxW + gap;
-  return Array.from({ length: n }, (_, i) => ({
-    x: anchorX - ((n - 1) / 2) * stride + i * stride,
-    y: fixedY,
-  }));
+function polar(cx, cy, r, a) {
+  return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
 }
 
-function clusterV(n, fixedX, anchorY, boxH, gap) {
-  const stride = boxH + gap;
-  return Array.from({ length: n }, (_, i) => ({
-    x: fixedX,
-    y: anchorY - ((n - 1) / 2) * stride + i * stride,
-  }));
-}
-
-// Compute the two endpoints of an edge given a box position and which
-// side of the hub it lives on. `dir > 0` means energy flows INTO the hub
-// (displayed as particles moving from box → hub). dir < 0 reverses the
-// endpoints so animateMotion runs box-ward.
-function edge(id, pos, _unused, side, dir, kw, color, active, boxW = BOX_W, boxH = BOX_H, diagonal = false, nodeR = 0, hubR = HUB_R) {
-  let from, to;
-  if (diagonal) {
-    // Diagonal beam for × layout: endpoints sit on the unit vector
-    // between box and hub centers. When nodeR > 0 the node is a circle
-    // and the box-side endpoint lands on its perimeter along that
-    // vector; otherwise we fall back to the nearest box corner. The
-    // hub-side endpoint sits on the hub perimeter. Default orientation
-    // (before the dir-based swap below) has to match the cardinal side
-    // it replaces — pv/grid default box→hub (dir=+1 means flow into
-    // the hub), bat/ev default hub→box (dir=+1 means flow out of it).
-    // Getting this wrong means a discharging battery animates toward
-    // the battery instead of toward the house.
-    const dx = CX - pos.x;
-    const dy = CY - pos.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const ux = dx / len;
-    const uy = dy / len;
-    const boxEdge = nodeR > 0
-      ? { x: pos.x + ux * nodeR, y: pos.y + uy * nodeR }
-      : {
-          x: pos.x + (ux > 0 ? boxW / 2 : -boxW / 2),
-          y: pos.y + (uy > 0 ? boxH / 2 : -boxH / 2),
-        };
-    const hubEdge = { x: CX - ux * hubR, y: CY - uy * hubR };
-    if (side === "right" || side === "bottom") {
-      from = hubEdge; to = boxEdge;
-    } else {
-      from = boxEdge; to = hubEdge;
-    }
-  } else if (side === "top") {
-    from = { x: pos.x, y: pos.y + boxH / 2 };
-    to   = { x: CX,    y: CY - hubR };
-  } else if (side === "bottom") {
-    from = { x: CX,    y: CY + hubR };
-    to   = { x: pos.x, y: pos.y - boxH / 2 };
-  } else if (side === "left") {
-    from = { x: pos.x + boxW / 2, y: pos.y };
-    to   = { x: CX - hubR,        y: CY };
-  } else { // right
-    from = { x: CX + hubR,        y: CY };
-    to   = { x: pos.x - boxW / 2, y: pos.y };
-  }
-  // Swap when energy flows the "unusual" way for that side (grid export,
-  // battery discharge). animateMotion always walks the path start→end,
-  // so reversing from/to flips the particle direction with no extra CSS.
-  if (dir < 0) [from, to] = [to, from];
-  return { id, from, to, kw, color, active };
+// Radial beam endpoints for a planet sitting on the hub's orbit. Both
+// endpoints lie on the line between the planet center and the hub
+// center; the planet endpoint lands on its circle perimeter, the hub
+// endpoint on the hub perimeter. `toHub` picks the particle direction
+// (animateMotion always walks from → to, so swapping them flips the
+// flow — cheaper than maintaining two edge variants).
+function radialEndpoints(pos, nodeR, hubR, toHub, cx, cy) {
+  const dx = cx - pos.x;
+  const dy = cy - pos.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len;
+  const uy = dy / len;
+  const planetEdge = { x: pos.x + ux * nodeR, y: pos.y + uy * nodeR };
+  const hubEdge    = { x: cx    - ux * hubR,   y: cy    - uy * hubR  };
+  return toHub
+    ? { from: planetEdge, to: hubEdge }
+    : { from: hubEdge,    to: planetEdge };
 }
 
 // Render a single edge as beam paths + plain particle circles. Each
@@ -780,25 +816,40 @@ function hashStr(s) {
 // a multi-device 55 px circle both read proportionally. Stroke is the
 // accent color so each node carries its identity on the edge of the
 // circle — no separate stripe needed the way rectangular boxes have.
-function renderCircleNode({ pos, title, value, sub, color, soc, radius = 86 }) {
+function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc, radius = 86,
+                            clickable = false, role = "", name = "", id = "" }) {
   const r = radius;
   const { x, y } = pos;
-  const titleY = Math.round(-0.42 * r);
+  const groupAttrs = clickable
+    ? ` class="ef-node ef-clickable" data-role="${escapeXml(role)}" data-name="${escapeXml(name)}" data-id="${escapeXml(id)}" tabindex="0"`
+    : ` class="ef-node"`;
+  // When a per-device name suffix is present, the title becomes two
+  // stacked lines ("SOLAR" / "SUNGROW"). That preserves more horizontal
+  // room inside the disk than a single "SOLAR · SUNGROW" line.
+  const twoLine = !!nameLabel;
+  const titleY = Math.round((twoLine ? -0.50 : -0.42) * r);
   const valueY = Math.round(0.09  * r);
   const subY   = Math.round(0.42  * r);
   const socY   = Math.round(0.70  * r);
+  const titleSvg = twoLine
+    ? `<text x="${x}" y="${y + titleY}" text-anchor="middle"
+             fill="var(--hero-label-text)" class="sv-node-title">
+         <tspan x="${x}" dy="0">${escapeXml(title)}</tspan>
+         <tspan x="${x}" dy="1.2em">${escapeXml(nameLabel)}</tspan>
+       </text>`
+    : `<text x="${x}" y="${y + titleY}" text-anchor="middle"
+             fill="var(--hero-label-text)" class="sv-node-title">
+         ${escapeXml(title)}
+       </text>`;
   const socText = soc != null
     ? `<text x="${x}" y="${y + socY}" text-anchor="middle"
              fill="var(--cyan)" class="sv-node-sub">SoC ${Math.round(soc)}%</text>`
     : "";
   return `
-    <g>
+    <g${groupAttrs}>
       <circle cx="${x}" cy="${y}" r="${r}"
               fill="var(--hero-box-fill)" stroke="${color}" stroke-width="2"/>
-      <text x="${x}" y="${y + titleY}" text-anchor="middle"
-            fill="var(--hero-label-text)" class="sv-node-title">
-        ${escapeXml(title)}
-      </text>
+      ${titleSvg}
       <text x="${x}" y="${y + valueY}" text-anchor="middle" fill="${color}" class="sv-node-value">
         ${value}
       </text>
@@ -808,57 +859,6 @@ function renderCircleNode({ pos, title, value, sub, color, soc, radius = 86 }) {
       </text>
       ${socText}
     </g>`;
-}
-
-function renderNode({
-  pos, title, value, sub, color, side, icon, soc,
-  boxW = BOX_W, boxH = BOX_H,
-  textY = { title: 20, value: 46, sub: 64, soc: 70 },
-}) {
-  const x = pos.x - boxW / 2;
-  const y = pos.y - boxH / 2;
-  // Accent stripe sits on the OUTER edge of each box (away from hub) so
-  // the eye follows the colored line back toward the house.
-  const stripe =
-    side === "left"   ? { x,                 y,                 w: 3,    h: boxH } :
-    side === "right"  ? { x: x + boxW - 3,   y,                 w: 3,    h: boxH } :
-    side === "top"    ? { x,                 y,                 w: boxW, h: 3 }    :
-                        { x,                 y: y + boxH - 3,   w: boxW, h: 3 };
-  const socBar = soc != null ? `
-    <rect x="${x + 14}" y="${y + textY.soc}" width="${boxW - 28}" height="2.5" rx="1.25"
-          fill="var(--hero-soc-track)"/>
-    <rect x="${x + 14}" y="${y + textY.soc}" width="${((boxW - 28) * (soc / 100)).toFixed(1)}" height="2.5" rx="1.25"
-          fill="var(--cyan)"/>` : "";
-  return `
-    <g>
-      <rect x="${x}" y="${y}" width="${boxW}" height="${boxH}" rx="12"
-            fill="var(--hero-box-fill)" stroke="var(--hero-box-border)" stroke-width="1"/>
-      <rect x="${stripe.x}" y="${stripe.y}" width="${stripe.w}" height="${stripe.h}" rx="1.5"
-            fill="${color}"/>
-      <text x="${x + 14}" y="${y + textY.title}"
-            fill="var(--hero-label-text)" class="sv-node-title">
-        ${escapeXml(title)}
-      </text>
-      <text x="${x + 14}" y="${y + textY.value}" fill="${color}" class="sv-node-value">
-        ${value}
-      </text>
-      <text x="${x + 14}" y="${y + textY.sub}"
-            fill="var(--hero-sub-text)" class="sv-node-sub">
-        ${escapeXml(sub)}
-      </text>
-      <g transform="translate(${x + boxW - 30}, ${y + 12})" opacity="0.55">
-        ${iconGlyph(icon, color)}
-      </g>
-      ${socBar}
-    </g>`;
-}
-
-// Title includes the driver name only when more than one of its kind
-// exists — avoids visual clutter ("SOLAR · solaredge") in the common
-// single-driver case while still disambiguating multi-driver rigs.
-function labelWithName(base, name, count, suffix = "") {
-  if (count > 1 && name) return `${base} · ${name.toUpperCase()}${suffix}`;
-  return `${base}${suffix}`;
 }
 
 // ---------- primitives ----------
@@ -873,15 +873,6 @@ function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 function escapeXml(s) {
   return String(s).replace(/[<>&"']/g, c =>
     ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" }[c]));
-}
-
-function iconGlyph(kind, color) {
-  const a = `stroke="${color}" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"`;
-  if (kind === "sun")  return `<g ${a}><circle cx="10" cy="10" r="4"/><path d="M10 1v2M10 17v2M1 10h2M17 10h2M4 4l1.4 1.4M14.6 14.6L16 16M4 16l1.4-1.4M14.6 5.4L16 4"/></g>`;
-  if (kind === "grid") return `<g ${a}><path d="M4 3v14M16 3v14M3 6h14M3 14h14"/></g>`;
-  if (kind === "bat")  return `<g ${a}><rect x="3" y="5" width="13" height="10" rx="1.5"/><path d="M16 8v4M8 8v4M12 8v4"/></g>`;
-  if (kind === "ev")   return `<g ${a}><rect x="3" y="7" width="12" height="7" rx="1.5"/><path d="M5 7V5h8v2M6 16v1M12 16v1M15 9l2 1v3l-2 1"/></g>`;
-  return "";
 }
 
 customElements.define("ftw-energy-flow", FtwEnergyFlow);
