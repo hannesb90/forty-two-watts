@@ -106,6 +106,13 @@ type Deps struct {
 type Server struct {
 	deps *Deps
 	mux  *http.ServeMux
+
+	// dailyCache memoizes per-local-day energy totals keyed by "YYYY-MM-DD".
+	// Past days are immutable once the day ends, so we only ever recompute
+	// today. Lives for process lifetime; /api/energy/daily?days=31 drops from
+	// ~30 SQL round-trips with ~500k rows shipped to Go to at most one.
+	dailyCacheMu sync.Mutex
+	dailyCache   map[string]state.DayEnergy
 }
 
 // New creates a new API server.
@@ -116,7 +123,11 @@ func New(deps *Deps) *Server {
 	if deps.WebDir == "" {
 		deps.WebDir = "web"
 	}
-	s := &Server{deps: deps, mux: http.NewServeMux()}
+	s := &Server{
+		deps:       deps,
+		mux:        http.NewServeMux(),
+		dailyCache: make(map[string]state.DayEnergy),
+	}
 	s.routes()
 	return s
 }
@@ -147,6 +158,7 @@ func (s *Server) routes() {
 	s.handle("GET  /api/self_tune/status", s.handleSelfTuneStatus)
 	s.handle("POST /api/self_tune/cancel", s.handleSelfTuneCancel)
 	s.handle("GET  /api/history", s.handleHistory)
+	s.handle("GET  /api/energy/daily", s.handleEnergyDaily)
 	s.handle("GET  /api/prices", s.handlePrices)
 	s.handle("GET  /api/forecast", s.handleForecast)
 	s.handle("GET  /api/mpc/plan", s.handleMPCPlan)
@@ -999,6 +1011,78 @@ func parseRange(s string) int64 {
 		return 3 * 24 * 60 * 60 * 1000
 	}
 	return 5 * 60 * 1000
+}
+
+// ---- /api/energy/daily ----
+//
+// Query params: days=N (default 7, capped at 90)
+// Response: {"days": [{"day":"YYYY-MM-DD","import_wh":..., "export_wh":...,
+//                      "pv_wh":..., "bat_charged_wh":..., "bat_discharged_wh":...,
+//                      "load_wh":...}], "tz": "Local"}
+//
+// Buckets are local-day. Today is the last entry. Mirrors the integration
+// loop in handleStatus's energy-today block — same site convention, same
+// W*dt math — but per local day across the requested range. Designed for
+// the dashboard's history cards (Imported / Consumed / Exported).
+func (s *Server) handleEnergyDaily(w http.ResponseWriter, r *http.Request) {
+	if s.deps.State == nil {
+		writeJSON(w, 200, map[string]any{"days": []any{}})
+		return
+	}
+	days := 7
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			days = n
+		}
+	}
+	if days > 90 {
+		days = 90
+	}
+	now := time.Now()
+	loc := now.Location()
+	todayMidnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+
+	out := make([]map[string]any, 0, days)
+	for i := days - 1; i >= 0; i-- {
+		dayStart := todayMidnight.AddDate(0, 0, -i)
+		dayKey := dayStart.Format("2006-01-02")
+		isToday := i == 0
+
+		var de state.DayEnergy
+		if isToday {
+			// In-progress day — always recompute (SQL-side integration).
+			if d, err := s.deps.State.DailyEnergy(dayStart.UnixMilli(), now.UnixMilli()); err == nil {
+				de = d
+			}
+		} else {
+			// Past day — immutable; cache forever (process lifetime).
+			s.dailyCacheMu.Lock()
+			cached, ok := s.dailyCache[dayKey]
+			s.dailyCacheMu.Unlock()
+			if ok {
+				de = cached
+			} else {
+				dayEnd := dayStart.AddDate(0, 0, 1)
+				if d, err := s.deps.State.DailyEnergy(dayStart.UnixMilli(), dayEnd.UnixMilli()); err == nil {
+					de = d
+					s.dailyCacheMu.Lock()
+					s.dailyCache[dayKey] = de
+					s.dailyCacheMu.Unlock()
+				}
+			}
+		}
+
+		out = append(out, map[string]any{
+			"day":               dayKey,
+			"import_wh":         de.ImportWh,
+			"export_wh":         de.ExportWh,
+			"pv_wh":             de.PVWh,
+			"bat_charged_wh":    de.BatChargedWh,
+			"bat_discharged_wh": de.BatDischargedWh,
+			"load_wh":           de.LoadWh,
+		})
+	}
+	writeJSON(w, 200, map[string]any{"days": out, "tz": loc.String()})
 }
 
 // ---- /api/prices ----
