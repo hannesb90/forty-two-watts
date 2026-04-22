@@ -4,9 +4,9 @@ Ce guide est fait pour vous qui n'avez jamais configuré un Raspberry Pi. Pas de
 
 ## Ce dont vous avez besoin
 
-- Un **Raspberry Pi** (de la taille d'un paquet de cigarettes)
-- La **carte mémoire** fournie (une minuscule carte SD)
-- L'**adaptateur secteur** (ressemble à un chargeur de téléphone)
+- Un **Raspberry Pi**
+- La **carte mémoire** fournie
+- L'**adaptateur secteur**
 - **Votre ordinateur habituel** (Windows ou Mac)
 - Un **lecteur de carte** sur votre ordinateur habituel (fente intégrée ou petit appareil USB)
 - **Internet à la maison** (câble réseau ou Wi-Fi)

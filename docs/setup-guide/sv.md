@@ -4,9 +4,9 @@ Den här guiden är skriven för dig som aldrig har pillat med en Raspberry Pi f
 
 ## Vad du behöver
 
-- En **Raspberry Pi** (ungefär stor som ett cigarettpaket)
-- Det **minneskort** som följer med (ett pyttelitet SD-kort)
-- **Strömadaptern** (ser ut som en mobilladdare)
+- En **Raspberry Pi**
+- Det **minneskort** som följer med
+- **Strömadaptern**
 - **Din vanliga dator** (Windows eller Mac)
 - En **kortläsare** till din vanliga dator (inbyggt fack, eller en liten USB-pryl att stoppa i)
 - **Internet** hemma (nätverkskabel eller Wi-Fi)

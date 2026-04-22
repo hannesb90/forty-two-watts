@@ -4,9 +4,9 @@ Diese Anleitung ist für dich, wenn du noch nie einen Raspberry Pi eingerichtet 
 
 ## Was du brauchst
 
-- Einen **Raspberry Pi** (etwa so groß wie eine Zigarettenschachtel)
-- Die **Speicherkarte**, die mitgeliefert wurde (eine winzige SD-Karte)
-- Das **Netzteil** (sieht aus wie ein Handyladegerät)
+- Einen **Raspberry Pi**
+- Die **Speicherkarte**, die mitgeliefert wurde
+- Das **Netzteil**
 - **Deinen normalen Computer** (Windows oder Mac)
 - Einen **Kartenleser** an deinem normalen Computer (eingebauter Schlitz oder ein kleines USB-Gerät)
 - **Internet zu Hause** (Netzwerkkabel oder WLAN)

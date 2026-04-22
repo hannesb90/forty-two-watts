@@ -4,9 +4,9 @@ This guide is for you if you've never set up a Raspberry Pi before. Relax — it
 
 ## What you'll need
 
-- A **Raspberry Pi** (about the size of a deck of cards)
-- The **memory card** that came with it (a tiny SD card)
-- The **power adapter** (looks like a phone charger)
+- A **Raspberry Pi**
+- The **memory card** that came with it
+- The **power adapter**
 - **Your regular computer** (Windows or Mac)
 - A **card reader** on your regular computer (a built-in slot, or a small USB gadget)
 - **Internet at home** (a network cable or Wi-Fi)
