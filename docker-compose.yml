@@ -122,9 +122,7 @@ services:
     volumes:
       - ./mosquitto/config:/mosquitto/config:ro
       - mosquitto-data:/mosquitto/data
-      - mosquitto-log:/mosquitto/log
 
 volumes:
   update-ipc:
   mosquitto-data:
-  mosquitto-log:

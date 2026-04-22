@@ -9,7 +9,7 @@
 -- only, and does not declare a battery capability.
 
 DRIVER = {
-  id           = "pixii_pv",
+  id           = "pixii-pv",
   name         = "Pixii PowerShaper (PV + meter)",
   manufacturer = "Pixii",
   version      = "0.2.0",
@@ -43,6 +43,10 @@ end
 local function sn_ok(sn)
     if sn == nil then return false end
     if SN_FILTER ~= nil and sn ~= SN_FILTER then return false end
+    -- Once we've latched onto an SN, reject traffic from any other Pixii
+    -- that might show up on the bus — otherwise we'd mix telemetry while
+    -- still reporting the first-seen SN as the device identity.
+    if LATCHED_SN ~= nil and sn ~= LATCHED_SN then return false end
     return true
 end
 
@@ -56,6 +60,11 @@ end
 
 function driver_init(config)
     host.set_make("Pixii")
+
+    -- Explicit reset so hot-reload in the same Lua VM doesn't inherit
+    -- state from a previous incarnation.
+    SN_FILTER  = nil
+    LATCHED_SN = nil
 
     if config and config.sn and config.sn ~= "" then
         SN_FILTER = tostring(config.sn)
@@ -165,4 +174,5 @@ end
 
 function driver_cleanup()
     LATCHED_SN = nil
+    SN_FILTER  = nil
 end
