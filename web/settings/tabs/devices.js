@@ -80,10 +80,22 @@
         var isCloudDriver = cap.http != null && !hasHostField && (hasAuthField || Object.keys(dcfg).length === 0);
         if (isLocalHTTP) {
           var lcfg = d.config || {};
+          // Zap is today the only HTTP driver that aggregates both meter
+          // and PV; the checkbox lets operators point a second gateway
+          // at P1-only duty without a separate driver file.
+          var isZap = /(^|\/)zap\.lua$/.test(d.lua || '');
           html += '<fieldset><legend>HTTP</legend>' +
             '<label>Host / IP ' + help('Hostname (e.g. zap.local) or IP address of the device. mDNS names work when your OS resolver supports them; otherwise use the LAN IP.') + '</label>' +
-            '<input type="text" data-path="drivers.' + idx + '.config.host" value="' + escHtml(lcfg.host || '') + '" placeholder="zap.local">' +
-            '</fieldset>';
+            '<input type="text" data-path="drivers.' + idx + '.config.host" value="' + escHtml(lcfg.host || '') + '" placeholder="zap.local">';
+          if (isZap) {
+            html += '<label style="margin-top:8px;display:flex;align-items:center;gap:6px;font-weight:normal">' +
+              '<input type="checkbox" data-checkbox-path="drivers.' + idx + '.config.disable_pv"' +
+              (lcfg.disable_pv ? ' checked' : '') + '>' +
+              'Disable PV readings ' +
+              help('Use this gateway for the P1 meter only. A second Zap at a metering-only site, or a setup where another driver already owns PV, should enable this so the two drivers don\'t double-count generation.') +
+              '</label>';
+          }
+          html += '</fieldset>';
         }
         if (isCloudDriver) {
           var cfg = d.config || {};
