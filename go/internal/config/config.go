@@ -204,6 +204,16 @@ type Fuse struct {
 	MaxAmps float64 `yaml:"max_amps" json:"max_amps"`
 	Phases  int     `yaml:"phases" json:"phases"`
 	Voltage float64 `yaml:"voltage" json:"voltage"`
+
+	// SafetyMarginA reserves headroom (per-phase amps) below MaxAmps
+	// inside the dispatch fuse guard. Defaults to 0.5 A when unset
+	// (omitempty, so the example config stays compact). Inverters
+	// often have their own per-phase current protection that trips
+	// before the breaker; without a margin the dispatch can ride right
+	// up to MaxAmps and the inverter cuts to 0 W in one tick, then
+	// dispatch ramps back up — visible as a flap. 0.5 A × 230 V × 3
+	// phases ≈ 345 W of aggregate headroom.
+	SafetyMarginA float64 `yaml:"safety_margin_a,omitempty" json:"safety_margin_a,omitempty"`
 }
 
 // MaxPowerW returns the total power budget for the fuse guard.

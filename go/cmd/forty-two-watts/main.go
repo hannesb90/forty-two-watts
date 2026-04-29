@@ -171,6 +171,11 @@ func main() {
 	// when SiteFuseAmps > 0; otherwise the per-phase clamp is disabled.
 	ctrl.SiteFuseAmps = cfg.Fuse.MaxAmps
 	ctrl.SiteFuseVoltage = cfg.Fuse.Voltage
+	ctrl.SiteFusePhases = cfg.Fuse.Phases
+	ctrl.SiteFuseSafetyA = cfg.Fuse.SafetyMarginA
+	if ctrl.SiteFuseSafetyA <= 0 {
+		ctrl.SiteFuseSafetyA = 0.5 // hardware self-protection headroom; cfg can override
+	}
 	// Restore persisted mode + target if present. The planner variants
 	// have to be listed too — without them the strategy the user picked in
 	// the UI (planner_self / planner_cheap / planner_arbitrage) is silently
@@ -329,6 +334,18 @@ func main() {
 			ctrlMu.Lock()
 			ctrl.InverterGroups = inverterGroupsFrom(newCfg.Drivers)
 			ctrl.DriverLimits = driverLimitsFrom(newCfg.Drivers, newCfg.Batteries)
+			// Fuse params + safety margin: previously startup-only.
+			// Hot-reload them so operators can tune the per-phase margin
+			// from the UI without restarting (e.g. raising it after the
+			// inverter's own protection trips, lowering it to recover
+			// last few hundred W of arbitrage headroom).
+			ctrl.SiteFuseAmps = newCfg.Fuse.MaxAmps
+			ctrl.SiteFuseVoltage = newCfg.Fuse.Voltage
+			ctrl.SiteFusePhases = newCfg.Fuse.Phases
+			ctrl.SiteFuseSafetyA = newCfg.Fuse.SafetyMarginA
+			if ctrl.SiteFuseSafetyA <= 0 {
+				ctrl.SiteFuseSafetyA = 0.5
+			}
 			ctrlMu.Unlock()
 
 			// Push the new pool totals into the planner so its next
