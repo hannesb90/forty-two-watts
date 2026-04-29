@@ -21,23 +21,29 @@ import { FtwElement } from "./ftw-element.js";
 
 class FtwBatteryControl extends FtwElement {
   static styles = `
-    :host { display: contents; }
+    :host { display: contents; font-family: var(--sans); color: var(--fg); }
 
     .row {
       display: flex;
       flex-direction: column;
-      gap: 6px;
-      margin-bottom: 14px;
+      gap: 8px;
+      margin-bottom: 16px;
     }
+    .row.hidden { display: none; }
+
     .label {
-      font-size: 12px;
-      color: var(--fg-dim);
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      font-weight: 500;
       text-transform: uppercase;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.18em;
+      color: var(--fg-muted);
     }
+
     .segmented {
       display: flex;
-      background: var(--ink-base, rgba(255, 255, 255, 0.04));
+      background: var(--ink-sunken);
+      border: 1px solid var(--line);
       border-radius: 8px;
       padding: 2px;
       gap: 2px;
@@ -47,111 +53,146 @@ class FtwBatteryControl extends FtwElement {
       border: 0;
       background: transparent;
       color: var(--fg-dim);
-      padding: 8px 10px;
+      padding: 9px 10px;
       border-radius: 6px;
+      font-family: var(--sans);
       font-size: 14px;
+      font-weight: 500;
       cursor: pointer;
       transition: background 120ms, color 120ms;
     }
     .seg-btn:hover { color: var(--fg); }
     .seg-btn.active {
-      background: var(--accent-bg, rgba(108, 207, 255, 0.18));
-      color: var(--accent, #6cf);
-      font-weight: 600;
+      background: var(--accent-e);
+      color: #0a0a0a;
     }
+
     .power-wrap {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
     }
     .power-wrap input {
       flex: 1;
-      background: var(--ink-base, rgba(255, 255, 255, 0.04));
-      border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
-      border-radius: 6px;
-      padding: 8px 10px;
+      background: var(--ink-raised);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
       color: var(--fg);
-      font-size: 16px;
+      font-family: var(--mono);
+      font-size: 0.95rem;
       font-variant-numeric: tabular-nums;
     }
     .power-wrap input:focus {
       outline: none;
-      border-color: var(--accent, #6cf);
+      border-color: var(--accent-e);
     }
     .unit {
-      color: var(--fg-dim);
-      font-size: 14px;
+      font-family: var(--mono);
+      color: var(--fg-muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
     }
+
     .chips {
       display: flex;
       gap: 6px;
       flex-wrap: wrap;
     }
     .chip {
-      border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+      border: 1px solid var(--line);
       background: transparent;
       color: var(--fg-dim);
-      padding: 6px 12px;
-      border-radius: 16px;
+      padding: 6px 14px;
+      border-radius: 999px;
       cursor: pointer;
+      font-family: var(--sans);
       font-size: 13px;
-      transition: background 120ms, color 120ms;
+      font-weight: 500;
+      transition: border-color 120ms, color 120ms;
     }
-    .chip:hover { color: var(--fg); }
+    .chip:hover {
+      color: var(--fg);
+      border-color: var(--fg-dim);
+    }
     .chip.active {
-      background: var(--accent-bg, rgba(108, 207, 255, 0.18));
-      color: var(--accent, #6cf);
-      border-color: var(--accent, #6cf);
-      font-weight: 600;
+      background: var(--accent-e);
+      color: #0a0a0a;
+      border-color: var(--accent-e);
     }
+
     .active-banner {
-      background: var(--accent-bg, rgba(108, 207, 255, 0.12));
-      border: 1px solid var(--accent, #6cf);
+      background: color-mix(in srgb, var(--accent-e) 10%, transparent);
+      border: 1px solid var(--accent-e);
       border-radius: 8px;
-      padding: 10px 12px;
-      margin-bottom: 14px;
+      padding: 12px 14px;
+      margin-bottom: 16px;
     }
     .active-banner.hidden { display: none; }
     .active-headline {
+      font-family: var(--sans);
       font-weight: 600;
-      color: var(--accent, #6cf);
+      color: var(--accent-e);
       margin-bottom: 2px;
     }
     .active-detail {
-      font-size: 13px;
+      font-family: var(--mono);
+      font-size: 12px;
       color: var(--fg-dim);
+      font-variant-numeric: tabular-nums;
     }
+
     .error {
-      background: rgba(239, 68, 68, 0.12);
-      border: 1px solid rgba(239, 68, 68, 0.5);
-      color: rgb(252, 165, 165);
+      background: color-mix(in srgb, var(--red-e) 12%, transparent);
+      border: 1px solid var(--red-e);
+      color: var(--red-e);
       padding: 8px 12px;
-      border-radius: 6px;
+      border-radius: 8px;
       font-size: 13px;
       margin-top: 8px;
     }
     .error.hidden { display: none; }
-    .row.hidden { display: none; }
-    /* Inherit page button styles for consistency with the EV modal —
-       the .btn-add class is global, but it lives outside this shadow.
-       We re-declare a minimal set so the buttons render inside the
-       shadow without needing :part() trickery. */
+
+    /* Footer buttons — primary CTA is the accent, on-accent text is
+       near-black per DESIGN.md. The Stop button is a ghost variant
+       until a hold is active, then it switches to the red status hue
+       to signal a destructive action. */
     .footer-btn {
       flex: 1;
-      padding: 0.55rem 0.9rem;
-      background: var(--accent, #6cf);
-      color: #001;
-      border: 0;
-      border-radius: 6px;
+      padding: 11px 18px;
+      border-radius: 8px;
       cursor: pointer;
-      font-weight: 600;
+      font-family: var(--sans);
+      font-weight: 500;
       font-size: 14px;
+      transition: transform 80ms, border-color 120ms, color 120ms, background 120ms;
     }
     .footer-btn:disabled {
-      opacity: 0.5;
+      opacity: 0.45;
       cursor: not-allowed;
     }
-    .footer-btn[data-variant="install"] { flex: 2; }
+    .footer-btn[data-variant="install"] {
+      flex: 2;
+      background: var(--accent-e);
+      color: #0a0a0a;
+      border: 1px solid var(--accent-e);
+    }
+    .footer-btn[data-variant="install"]:hover:not(:disabled) {
+      transform: translateY(-1px);
+    }
+    .footer-btn[data-stop] {
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid var(--line);
+    }
+    .footer-btn[data-stop]:not(:disabled) {
+      color: var(--red-e);
+      border-color: var(--red-e);
+    }
+    .footer-btn[data-stop]:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--red-e) 12%, transparent);
+    }
   `;
 
   constructor() {
