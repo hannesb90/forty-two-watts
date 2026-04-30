@@ -1212,10 +1212,14 @@ func applyFuseGuard(targets []DispatchTarget, store *telemetry.Store, state *Sta
 	// #208 follow-up in `docs/safety.md` §3a.
 	//
 	// `perPhaseOverageW` is direction-agnostic — phase amps from the
-	// meter are absolute magnitudes. We attribute the per-phase overage
-	// to whichever direction the aggregate grid is currently flowing,
-	// so a per-phase EXPORT trip pushes the discharge-shrink path the
-	// same way per-phase IMPORT pushes the charge-shrink path.
+	// meter are absolute magnitudes. Attribute to whichever side the
+	// AGGREGATE METER is currently flowing (currentGrid), not to the
+	// post-target `predicted`. Per-phase amps and currentGrid are read
+	// from the same DerMeter sample, so they're internally consistent;
+	// `predicted` mixes in `sumTarget` (a hypothetical future state)
+	// and can swing across 0 on a large planner request, attributing
+	// a current-export overage to the import path (or vice versa) and
+	// pushing the grid further into the violating direction.
 	perPhase := perPhaseOverageW(store, state) * 3.0
 	// Aggregate budget honours the safety margin too — keep dispatch
 	// commands strictly inside the breaker envelope so the inverter's
@@ -1227,7 +1231,7 @@ func applyFuseGuard(targets []DispatchTarget, store *telemetry.Store, state *Sta
 	importOverage := predicted - effFuseW
 	exportOverage := -effFuseW - predicted
 	if perPhase > 0 {
-		if predicted >= 0 {
+		if currentGrid >= 0 {
 			if perPhase > importOverage {
 				importOverage = perPhase
 			}
@@ -1587,7 +1591,12 @@ func forceFuseDischarge(
 	// to command MORE discharge, pushing the over-current phase further
 	// over the breaker. applyFuseGuard's exportOverage branch already
 	// shrinks discharge for that case before we run.
-	if predicted >= 0 {
+	//
+	// Gate on `currentGrid` (live aggregate at the meter) rather than
+	// `predicted`. Per-phase amps and currentGrid come from the same
+	// DerMeter sample; predicted mixes in sumTarget which can swing
+	// across 0 and silently flip the gate.
+	if currentGrid >= 0 {
 		perPhaseOverage := perPhaseOverageW(store, state) * 3.0
 		if perPhaseOverage > overage {
 			overage = perPhaseOverage

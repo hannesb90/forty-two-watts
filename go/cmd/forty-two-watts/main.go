@@ -172,10 +172,10 @@ func main() {
 	ctrl.SiteFuseAmps = cfg.Fuse.MaxAmps
 	ctrl.SiteFuseVoltage = cfg.Fuse.Voltage
 	ctrl.SiteFusePhases = cfg.Fuse.Phases
-	ctrl.SiteFuseSafetyA = cfg.Fuse.SafetyMarginA
-	if ctrl.SiteFuseSafetyA <= 0 {
-		ctrl.SiteFuseSafetyA = 0.5 // hardware self-protection headroom; cfg can override
-	}
+	// EffectiveSafetyMarginA distinguishes nil ("unset, use default")
+	// from explicit 0 ("operator chose to disable"). The earlier
+	// `<= 0 → default` shortcut clobbered the disable case.
+	ctrl.SiteFuseSafetyA = cfg.Fuse.EffectiveSafetyMarginA()
 	// Restore persisted mode + target if present. The planner variants
 	// have to be listed too — without them the strategy the user picked in
 	// the UI (planner_self / planner_cheap / planner_arbitrage) is silently
@@ -342,10 +342,9 @@ func main() {
 			ctrl.SiteFuseAmps = newCfg.Fuse.MaxAmps
 			ctrl.SiteFuseVoltage = newCfg.Fuse.Voltage
 			ctrl.SiteFusePhases = newCfg.Fuse.Phases
-			ctrl.SiteFuseSafetyA = newCfg.Fuse.SafetyMarginA
-			if ctrl.SiteFuseSafetyA <= 0 {
-				ctrl.SiteFuseSafetyA = 0.5
-			}
+			// Mirror the startup-path default semantics — nil → 0.5,
+			// explicit 0 → disabled. See EffectiveSafetyMarginA.
+			ctrl.SiteFuseSafetyA = newCfg.Fuse.EffectiveSafetyMarginA()
 			ctrlMu.Unlock()
 
 			// Push the new pool totals into the planner so its next
