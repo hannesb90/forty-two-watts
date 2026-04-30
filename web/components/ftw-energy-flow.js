@@ -1044,10 +1044,12 @@ class FtwEnergyFlow extends FtwElement {
     const P = {
       vbX, vbW, H: Hdyn, cy,
       orbitR, baseR: tier.baseR, hubR: tier.hubR,
-      // Compact viewports: lift the icon ~20 px further (cy − 50 →
-      // cy − 70) so the shrunken hub doesn't crowd the icon onto the
-      // power value.
-      hubIconY:      cy - (compact ? 70 : 54),
+      // Compact viewports: lift the icon ~40 px above the desktop
+      // baseline (cy − 50 was original, then −70, now −90). Desktop
+      // gets the same ~20 px lift (cy − 54 → cy − 74) so the icon
+      // doesn't crowd the power value when the hub disc shrinks
+      // proportionally.
+      hubIconY:      cy - (compact ? 90 : 74),
       hubValueY:     cy - (compact ? 8  : 10),
       hubSelfNowY:   cy + (compact ? 14 : 16),
       hubSelfTodayY: cy + (compact ? 32 : 34),
@@ -1428,17 +1430,30 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
     socY = 0;
   } else {
     titleY = Math.round((twoLine ? -0.50 : -0.42) * r);
-    const dailyR = compact ? 0.32 : 0.50;
-    const subR   = showDaily ? (compact ? 0.55 : 0.66) : 0.42;
-    const socRow = showDaily ? (compact ? 0.74 : 0.80) : 0.70;
+    // Two "missing-row" branches that both compress the value→daily
+    // gap from the wide 0.46 r used in the full 5-row case to ~0.26 r,
+    // so daily and the next row don't crowd each other at the disc
+    // bottom:
+    //   - no-sub-but-soc  (battery, post colour-swap)
+    //   - no-soc-but-sub  (grid)
+    // The full 5-row case (EV with daily, sub, AND soc) keeps the
+    // wide gap because there's enough vertical room to spread.
+    const noSubButSoc = !showSub && showSoc;
+    const noSocButSub = showSub && !showSoc;
+    const compressed  = noSubButSoc || noSocButSub;
+    const dailyR = compressed
+      ? (compact ? 0.22 : 0.30)
+      : (compact ? 0.32 : 0.50);
+    const subR = noSocButSub
+      ? (compact ? 0.46 : 0.60)
+      : (showDaily ? (compact ? 0.55 : 0.66) : 0.42);
+    const socR = noSubButSoc
+      ? (compact ? 0.55 : 0.62)
+      : (showDaily ? (compact ? 0.74 : 0.80) : 0.70);
     valueY = Math.round((showDaily ? 0.04 : 0.09) * r);
     dailyY = Math.round(dailyR * r);
     subY   = Math.round(subR * r);
-    // When the planet has no status sub-label but still has SoC
-    // (e.g. battery now that 'charging/discharging' moved to the
-    // power-value colour), pull SoC up into the empty sub slot so
-    // the bottom of the bubble doesn't feel hollow.
-    socY   = Math.round((!showSub && showSoc ? subR : socRow) * r);
+    socY   = Math.round(socR * r);
   }
   const titleSvg = twoLine
     ? `<text x="${x}" y="${y + titleY}" text-anchor="middle"
