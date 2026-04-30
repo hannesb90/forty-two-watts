@@ -242,7 +242,10 @@ class FtwPriceChart extends FtwElement {
     // the section holds twice the fuse-card height (DESIGN spec).
     const W = 1000;
     const H = 240;
-    const pad = { t: 16, r: 16, b: 28, l: 36 };
+    // Wider left padding so the y-axis öre labels have breathing
+    // room between the SVG edge and the plot's first bar (was 36 →
+    // labels rendered too close to the card's left border).
+    const pad = { t: 16, r: 16, b: 28, l: 56 };
     const plotW = W - pad.l - pad.r;
     const plotH = H - pad.t - pad.b;
     const barW = plotW / n;
