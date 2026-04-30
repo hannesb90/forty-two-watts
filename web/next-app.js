@@ -444,7 +444,10 @@
             id: "pv-" + name, corner: "top-left", title: "SOLAR", name: name, role: "pv",
             kw: pvKw, toHub: true,
             color: pvGen ? "var(--amber)" : "var(--fg-muted)",
-            sub: pvGen ? "generating" : "idle",
+            // Solar is one-directional: the power value alone already
+            // shows whether it's generating or idle. The sub-label
+            // would just repeat the same fact in words.
+            sub: "",
             dailyKwh: pvDailyStr,
           });
         }
