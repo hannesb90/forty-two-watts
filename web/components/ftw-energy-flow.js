@@ -1026,26 +1026,23 @@ class FtwEnergyFlow extends FtwElement {
     // Hdyn becomes empty space beneath the bottom-center cluster,
     // not centered letter-boxing.
     const cy = (Hdyn - bottomExtra) / 2;
-    // Hub vertical layout — five rows stacked from top to bottom:
-    //   1. icon              (raised so the lengthier text labels below
-    //                         have headroom; was hubIconY)
-    //   2. realtime power    (the big number)
-    //   3. self-powered NOW  (% from non-grid right now)
-    //   4. self-powered TODAY (% across the whole day)
-    //   5. CONSUMING / "status" label
+    // Hub vertical layout — four rows centred around `cy` now that
+    // the trailing CONSUMING label is gone. Stack span ≈ 90px (icon
+    // → bottom-of-self-today); offsets chosen so the visual mass
+    // sits in the middle of the disc instead of biasing upward.
     //
-    // Spread spacing: equal vertical gaps between rows so the eye
-    // reads top-to-bottom without any pair feeling glued. Compact
-    // viewports tighten the stack proportionally.
+    //   1. icon                 (above the text block)
+    //   2. realtime power       (the big number)
+    //   3. % SELF-POWERED NOW
+    //   4. % SELF-POWERED TODAY
     const compact = this._compact;
     const P = {
       vbX, vbW, H: Hdyn, cy,
       orbitR, baseR: tier.baseR, hubR: tier.hubR,
-      hubIconY:      cy - (compact ? 72 : 76),
-      hubValueY:     cy - (compact ? 16 : 18),
-      hubSelfNowY:   cy + (compact ? 4  : 6),
-      hubSelfTodayY: cy + (compact ? 22 : 24),
-      hubLabelY:     cy + (compact ? 42 : 46),
+      hubIconY:      cy - (compact ? 50 : 54),
+      hubValueY:     cy - (compact ? 8  : 10),
+      hubSelfNowY:   cy + (compact ? 14 : 16),
+      hubSelfTodayY: cy + (compact ? 32 : 34),
     };
     // -- /Dynamic sizing -------------------------------------------------
 
@@ -1396,23 +1393,20 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
   // room inside the disk than a single "SOLAR · SUNGROW" line.
   const twoLine = !!nameLabel;
   const titleY = Math.round((twoLine ? -0.50 : -0.42) * r);
-  // Even four-gap spread between the rows, anchored on title (top)
-  // and soc (bottom). The user's spec: "same spacing between title
-  // and power as between power and kWh". The simplest answer that
-  // also makes daily / sub / soc breathe equally is one constant
-  // step. Without dailyKwh the layout collapses to a 4-row stack.
+  // Title→value gap is generous (≈ 0.46 r). User asked for the
+  // value→daily gap to match it — without compressing the title→value
+  // pairing. So daily sits one full primary gap below value, and
+  // sub / soc trail with the original tighter spacing. The bubble
+  // grows a touch taller into the disc but stays inside the edge
+  // (socY ≤ 0.80 r).
   //
-  // Spread = (socY − titleY) / steps:
-  //   showDaily → 4 steps  (5 rows: title, value, daily, sub, soc)
-  //   else      → 3 steps  (4 rows: title, value, sub, soc)
-  const titleR = twoLine ? -0.50 : -0.42;
-  const socR   = showDaily ? 0.76 : 0.70;
-  const steps  = showDaily ? 4 : 3;
-  const stepR  = (socR - titleR) / steps;
-  const valueY = Math.round((titleR + stepR * 1) * r);
-  const dailyY = Math.round((titleR + stepR * 2) * r);
-  const subY   = Math.round((titleR + stepR * (showDaily ? 3 : 2)) * r);
-  const socY   = Math.round(socR * r);
+  // Without dailyKwh the layout collapses back to the legacy 4-row
+  // stack (title · value · sub · soc) so old planet payloads still
+  // render cleanly.
+  const valueY = Math.round((showDaily ? 0.04 : 0.09) * r);
+  const dailyY = Math.round(0.50  * r);
+  const subY   = Math.round((showDaily ? 0.66 : 0.42) * r);
+  const socY   = Math.round((showDaily ? 0.80 : 0.70) * r);
   const titleSvg = twoLine
     ? `<text x="${x}" y="${y + titleY}" text-anchor="middle"
              fill="var(--hero-label-text)" class="sv-node-title">
