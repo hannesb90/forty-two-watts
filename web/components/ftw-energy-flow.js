@@ -578,7 +578,7 @@ class FtwEnergyFlow extends FtwElement {
         ...radialEndpoints(p._pos, p._r, P.hubR, p.toHub, CX, P.cy),
         kw: kwAbs,
         color: p.color,
-        active: !p.placeholder && kwAbs > 0.05,
+        active: !p.placeholder && kwAbs > 0.042,
       };
     });
     const maxKw = Math.max(0.5, ...edges.map(e => e.kw));
@@ -788,7 +788,7 @@ class FtwEnergyFlow extends FtwElement {
         if (p.role === "grid" && p.toHub) gridImport += Math.max(0, p.kw || 0);
       }
       const loadKw = Math.abs(load) || 0;
-      if (loadKw > 0.05) {
+      if (loadKw > 0.042) {
         const fromGrid = Math.min(gridImport, loadKw);
         selfPoweredPct = Math.max(0, Math.min(100, (1 - fromGrid / loadKw) * 100));
       }
@@ -1424,9 +1424,12 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
 // ---------- primitives ----------
 
 function fmtKw(kw) {
-  const abs = Math.abs(kw);
-  if (abs < 0.1) return "0 W";
-  if (abs < 1)   return `${Math.round(kw * 1000)} W`;
+  // Input is kilowatts. Sub-kW values render as plain integer watts
+  // so a "30 W" import or "−12 W" battery trickle stays visible as
+  // the real number. The visual "idle / balanced" affordances (beam
+  // dimming, sub-label text) live on a separate ±42 W threshold —
+  // this formatter never collapses a non-zero reading to "0 W".
+  if (Math.abs(kw) < 1) return `${Math.round(kw * 1000)} W`;
   return `${kw.toFixed(2)} kW`;
 }
 
@@ -1453,11 +1456,11 @@ function aggregateGroups(groups) {
                   (!group.some(p => p.toHub) ? false : (totalKw >= 0));
     let sub = first.sub || "";
     if (first.role === "battery") {
-      sub = absKw < 0.05 ? "idle" : (totalKw >= 0 ? "charging" : "discharging");
+      sub = absKw < 0.042 ? "idle" : (totalKw >= 0 ? "charging" : "discharging");
     } else if (first.role === "pv") {
-      sub = absKw < 0.05 ? "idle" : "generating";
+      sub = absKw < 0.042 ? "idle" : "generating";
     } else if (first.role === "ev") {
-      sub = absKw < 0.05 ? "idle" : "charging";
+      sub = absKw < 0.042 ? "idle" : "charging";
     }
     // SoC: simple mean across reporters. Real weighting needs per-
     // battery capacity, which the component doesn't have here — the
@@ -1493,7 +1496,7 @@ function aggregateGroups(groups) {
       role: first.role,
       kw: totalKw,
       toHub,
-      color: absKw < 0.05 ? "var(--fg-muted)" : first.color,
+      color: absKw < 0.042 ? "var(--fg-muted)" : first.color,
       sub,
       soc,
       chargeLimit,
