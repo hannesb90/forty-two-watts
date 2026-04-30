@@ -647,6 +647,14 @@
     window.addEventListener('resize', render);
     const btn = document.getElementById('plan-replan');
     if (btn) btn.addEventListener('click', replan);
+    const helpBtn = document.getElementById('plan-help-btn');
+    const helpModal = document.getElementById('plan-help-modal');
+    if (helpBtn && helpModal) {
+      helpBtn.addEventListener('click', function () {
+        if (typeof helpModal.open === 'function') helpModal.open();
+        else helpModal.setAttribute('open', '');
+      });
+    }
   }
 
   if (document.readyState === 'loading') {
