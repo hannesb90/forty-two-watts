@@ -1401,24 +1401,36 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
   // stacked lines ("SOLAR" / "SUNGROW"). That preserves more horizontal
   // room inside the disk than a single "SOLAR · SUNGROW" line.
   const twoLine = !!nameLabel;
-  const titleY = Math.round((twoLine ? -0.50 : -0.42) * r);
-  // Title→value gap is generous (≈ 0.46 r). User asked for the
-  // value→daily gap to match it — without compressing the title→value
-  // pairing. On small screens the larger CSS font sizes already eat
-  // most of the available vertical room, so the daily line moves
-  // closer to the power value (compact branch); the bubble stays
-  // inside the disc edge.
-  //
-  // Without dailyKwh the layout collapses back to the legacy 4-row
-  // stack (title · value · sub · soc) so old planet payloads still
-  // render cleanly.
-  const dailyR = compact ? 0.32 : 0.50;
-  const subR   = showDaily ? (compact ? 0.55 : 0.66) : 0.42;
-  const socRow = showDaily ? (compact ? 0.74 : 0.80) : 0.70;
-  const valueY = Math.round((showDaily ? 0.04 : 0.09) * r);
-  const dailyY = Math.round(dailyR * r);
-  const subY   = Math.round(subR * r);
-  const socY   = Math.round(socRow * r);
+  // Simple-mode planets (e.g. solar — no status sub-label, no SoC)
+  // use a 3-row stack centred around the disc midline:
+  //   title · value · daily
+  // with the power value at y=0 and equal title-to-power /
+  // power-to-daily gaps. The dropping of two trailing rows means
+  // the visual mass would otherwise sit in the upper half — this
+  // branch re-balances around y=0 so power reads as the focal point.
+  const simple = !sub && soc == null && showDaily;
+  let titleY, valueY, dailyY, subY, socY;
+  if (simple) {
+    const gap = compact ? 0.28 : 0.32;
+    titleY = Math.round(-gap * r);
+    valueY = 0;
+    dailyY = Math.round(gap * r);
+    subY = 0;   // unused
+    socY = 0;   // unused
+  } else {
+    // 5-row layout (title · value · daily · sub · soc) with the
+    // generous title→value gap mirrored on value→daily, then sub /
+    // soc trailing on a tighter step. Compact viewports tighten the
+    // primary gap so the planet stays inside the disc edge.
+    titleY = Math.round((twoLine ? -0.50 : -0.42) * r);
+    const dailyR = compact ? 0.32 : 0.50;
+    const subR   = showDaily ? (compact ? 0.55 : 0.66) : 0.42;
+    const socRow = showDaily ? (compact ? 0.74 : 0.80) : 0.70;
+    valueY = Math.round((showDaily ? 0.04 : 0.09) * r);
+    dailyY = Math.round(dailyR * r);
+    subY   = Math.round(subR * r);
+    socY   = Math.round(socRow * r);
+  }
   const titleSvg = twoLine
     ? `<text x="${x}" y="${y + titleY}" text-anchor="middle"
              fill="var(--hero-label-text)" class="sv-node-title">
