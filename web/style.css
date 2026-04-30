@@ -401,6 +401,23 @@ main {
   font-family: monospace;
 }
 .status-bar-item { white-space: nowrap; }
+/* Driver list overrides .status-bar-item's nowrap so chips wrap onto
+   additional rows when there are too many to fit. The bar itself
+   grows in height; the page width never expands past the viewport.
+   Each chip keeps nowrap so a driver name like "solaredge-pv" never
+   breaks across lines. */
+#sb-drivers {
+  white-space: normal;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 2px;
+  min-width: 0;
+}
+#sb-drivers > span {
+  white-space: nowrap;
+}
 .sb-ok { color: #22c55e; }
 .sb-warn { color: #f59e0b; }
 .sb-err { color: #ef4444; }

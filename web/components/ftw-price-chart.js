@@ -72,6 +72,19 @@ class FtwPriceChart extends FtwElement {
     .toggle[data-vat="off"]::before {
       transform: translateX(100%);
     }
+    /* Horizon pill is a 3-position selector (Today / +Tomorrow / Tomorrow);
+       slider width is 1/3 of the inner area instead of the default 1/2. */
+    .toggle[data-horizon]::before {
+      width: calc((100% - 4px) / 3);
+    }
+    .toggle[data-horizon="all"]::before      { transform: translateX(100%); }
+    .toggle[data-horizon="tomorrow"]::before { transform: translateX(200%); }
+    .toggles {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
     .toggle button {
       position: relative;
       z-index: 1;
@@ -97,6 +110,17 @@ class FtwPriceChart extends FtwElement {
       width: 100%;
       display: block;
       user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      /* Allow normal vertical page scroll when the touch starts on the
+         chart. Horizontal gestures are reserved for scrubbing — we win
+         them by calling preventDefault on touchmove once long-press
+         has fired. */
+      touch-action: pan-y;
+    }
+    .scrub-cursor {
+      pointer-events: none;
+      transition: opacity 80ms ease;
     }
     .empty {
       color: var(--fg-muted);
@@ -132,15 +156,32 @@ class FtwPriceChart extends FtwElement {
     }
     .tip-price.peak  { color: var(--red-e); }
     .tip-price.low   { color: var(--green-e); }
+
+    /* Phone layout — the JS picks a taller viewBox H on small screens
+       so bars get more vertical room WITHOUT vertically stretching
+       text (which made labels like "NOW" look horizontally squeezed
+       relative to their height). The SVG's intrinsic ratio handles
+       sizing — no CSS aspect-ratio needed. The tooltip is pinned
+       above the bars so it never covers the data being read. */
+    @media (max-width: 600px) {
+      .chart-wrap { padding-top: 40px; }
+      .tip {
+        transform: translate(-50%, 0);
+        transition: opacity 80ms, left 120ms cubic-bezier(.4, 0, .2, 1);
+      }
+    }
   `;
 
   constructor() {
     super();
     this._data = null;        // { zone, items: [{tsMs, ore}], min, max, vatPct }
-    this._vatOn = true;       // toggle state — default ON per spec
+    this._vatOn = readVatPref(); // persisted across reloads, defaults to true
+    this._horizon = readHorizonPref(); // "today" or "all", persisted
     this._refreshTimer = null;
     this._hover = null;       // { idx, x, y } during hover
     this._vatPct = 25;        // fallback; overwritten from /api/config
+    this._geom = null;        // { padL, plotW, n, W } — set in _renderChart
+    this._isTouching = false; // suppresses synthesized mouse events after touch
   }
 
   connectedCallback() {
@@ -148,12 +189,27 @@ class FtwPriceChart extends FtwElement {
     this._loadConfig();
     this._loadPrices();
     this._refreshTimer = setInterval(() => this._loadPrices(), 5 * 60 * 1000);
+    // Re-render when the viewport crosses the small-screen breakpoint
+    // — render() picks a different viewBox H per side, so a rotation
+    // or window-resize over the 600 px line needs a redraw.
+    if (typeof window !== "undefined" && window.matchMedia) {
+      this._mql = window.matchMedia("(max-width: 600px)");
+      this._mqlListener = () => this.update();
+      if (this._mql.addEventListener) this._mql.addEventListener("change", this._mqlListener);
+      else if (this._mql.addListener) this._mql.addListener(this._mqlListener);
+    }
   }
 
   disconnectedCallback() {
     if (this._refreshTimer) {
       clearInterval(this._refreshTimer);
       this._refreshTimer = null;
+    }
+    if (this._mql && this._mqlListener) {
+      if (this._mql.removeEventListener) this._mql.removeEventListener("change", this._mqlListener);
+      else if (this._mql.removeListener) this._mql.removeListener(this._mqlListener);
+      this._mql = null;
+      this._mqlListener = null;
     }
   }
 
@@ -171,7 +227,15 @@ class FtwPriceChart extends FtwElement {
 
   async _loadPrices() {
     try {
-      const r = await fetch("/api/prices?hours=48");
+      // since_ms = local midnight today so past slots stay visible (the
+      // chart should read like a calendar, not a sliding window). The
+      // API's default lookback is only 1 h, which dropped the morning
+      // off as the day progressed.
+      const midnight = new Date();
+      midnight.setHours(0, 0, 0, 0);
+      const since = midnight.getTime();
+      const until = Date.now() + 48 * 3600_000;
+      const r = await fetch(`/api/prices?since_ms=${since}&until_ms=${until}`);
       const j = await r.json();
       if (!j || !Array.isArray(j.items)) {
         this._data = null;
@@ -204,23 +268,49 @@ class FtwPriceChart extends FtwElement {
 
   render() {
     const data = this._data;
+    const hasTomorrow = data ? itemsIncludeTomorrow(data.items) : false;
+    // No tomorrow data → no choice to make, so the toggle is hidden
+    // and the effective horizon is forced to "today" regardless of
+    // the stored preference. The stored value is kept untouched so the
+    // user's choice re-applies once tomorrow's prices publish.
+    const effectiveHorizon = hasTomorrow ? this._horizon : "today";
     const vatLabel = this._vatOn ? "incl. VAT" : "spot only";
+    const horizonLabel =
+      effectiveHorizon === "today"    ? "today" :
+      effectiveHorizon === "tomorrow" ? "tomorrow" :
+                                        "today + tomorrow";
+    const horizonToggleHtml = hasTomorrow ? `
+          <div class="toggle" role="tablist" data-horizon="${effectiveHorizon}">
+            <button type="button" data-horizon="today"    class="${effectiveHorizon === "today" ? "active" : ""}"    aria-selected="${effectiveHorizon === "today"}">Today</button>
+            <button type="button" data-horizon="all"      class="${effectiveHorizon === "all"   ? "active" : ""}"    aria-selected="${effectiveHorizon === "all"}">+ Tomorrow</button>
+            <button type="button" data-horizon="tomorrow" class="${effectiveHorizon === "tomorrow" ? "active" : ""}" aria-selected="${effectiveHorizon === "tomorrow"}">Tomorrow</button>
+          </div>` : "";
     const head = `
       <div class="head">
         <div>
           <div class="label">Electricity prices</div>
-          <div class="meta">${data ? `${escapeXml(data.zone)} · ${vatLabel}` : "—"}</div>
+          <div class="meta">${data ? `${escapeXml(data.zone)} · ${vatLabel} · ${horizonLabel}` : "—"}</div>
         </div>
-        <div class="toggle" role="tablist" data-vat="${this._vatOn ? "on" : "off"}">
-          <button type="button" data-vat="on"  class="${this._vatOn ? "active" : ""}" aria-selected="${this._vatOn}">Incl. VAT</button>
-          <button type="button" data-vat="off" class="${!this._vatOn ? "active" : ""}" aria-selected="${!this._vatOn}">Spot</button>
+        <div class="toggles">
+          <div class="toggle" role="tablist" data-vat="${this._vatOn ? "on" : "off"}">
+            <button type="button" data-vat="on"  class="${this._vatOn ? "active" : ""}" aria-selected="${this._vatOn}">Incl. VAT</button>
+            <button type="button" data-vat="off" class="${!this._vatOn ? "active" : ""}" aria-selected="${!this._vatOn}">Spot</button>
+          </div>${horizonToggleHtml}
         </div>
       </div>
     `;
     if (!data || !data.items.length) {
       return head + `<div class="empty">No price data available.</div>`;
     }
-    return head + this._renderChart(data);
+    let visible;
+    if (effectiveHorizon === "today")         visible = filterToday(data.items);
+    else if (effectiveHorizon === "tomorrow") visible = filterTomorrow(data.items);
+    else                                      visible = data.items;
+    if (!visible.length) {
+      const which = effectiveHorizon === "tomorrow" ? "tomorrow" : "today";
+      return head + `<div class="empty">No price data for ${which}.</div>`;
+    }
+    return head + this._renderChart({ ...data, items: visible });
   }
 
   _renderChart(data) {
@@ -238,17 +328,38 @@ class FtwPriceChart extends FtwElement {
     const maxP = prices[hi];
     const meanP = prices.reduce((a, p) => a + p, 0) / n;
 
-    // SVG geometry. Width = 100 % via viewBox; height fixed-ish so
-    // the section holds twice the fuse-card height (DESIGN spec).
+    // SVG geometry. Width = 100 % via viewBox. Height of the viewBox
+    // is doubled on phones so bars get more vertical room — bumping
+    // the box AT THE VIEWBOX level (not via a mismatched CSS
+    // aspect-ratio + preserveAspectRatio="none") keeps text scaled
+    // uniformly. preserveAspectRatio="none" is harmless when the box
+    // and viewBox match.
     const W = 1000;
-    const H = 240;
+    const small = typeof window !== "undefined" && window.matchMedia &&
+      window.matchMedia("(max-width: 600px)").matches;
+    const H = small ? 720 : 240;
     // Wider left padding so the y-axis öre labels have breathing
     // room between the SVG edge and the plot's first bar (was 36 →
     // labels rendered too close to the card's left border).
-    const pad = { t: 16, r: 16, b: 28, l: 56 };
+    // Phones get bigger fonts AND more padding so the larger labels
+    // stay inside the SVG box and below the NOW pill clears its top.
+    const pad = small
+      ? { t: 26, r: 16, b: 40, l: 80 }
+      : { t: 16, r: 16, b: 28, l: 56 };
+    const fsAxis = small ? 18 : 10;  // y-axis öre + x-axis time
+    const fsNow  = small ? 18 : 10;  // NOW label
+    const fsMark = small ? 20 : 11;  // peak/low ▼▲ glyphs
+    // Tick density drops from every 3 h to every 6 h on phones so the
+    // bigger labels don't overlap each other across a 48 h chart.
+    const tickStepMs = (small ? 6 : 3) * 3600_000;
+    const tickLabelDy = small ? 26 : 16;
     const plotW = W - pad.l - pad.r;
     const plotH = H - pad.t - pad.b;
     const barW = plotW / n;
+    // Geometry stash for hit-testing from raw clientX during touch
+    // scrubbing — touchmove targets stay anchored to the touchstart
+    // element, so we can't lean on data-idx like the mouse path does.
+    this._geom = { padL: pad.l, plotW, n, W };
     // Y scale: include 0 so a negative-spot day still renders, and
     // pad the top so the peak's marker doesn't kiss the edge.
     const yMin = Math.min(0, minP);
@@ -273,14 +384,23 @@ class FtwPriceChart extends FtwElement {
       const x = pad.l + i * barW;
       const p = prices[i];
       const y = yToPx(p);
-      const h = Math.max(1, zeroY - y);
+      // Negative-price slots draw downward from zero; the rect's top
+      // is the zero line and its height extends to the price's y.
+      // Positive slots draw the conventional way (top = price y, down
+      // to zero). Either way, height is the absolute distance.
+      const top = p < 0 ? zeroY : y;
+      const h = Math.max(1, Math.abs(zeroY - y));
       const dev = (p - meanP) / Math.max(1, maxP - minP);
-      const fill = i === lo ? "var(--green-e)"
+      // Negative slots are flagged yellow regardless of where they
+      // land in the lo/hi ranking — "they pay you to take it" reads
+      // as a different category, not just "the cheapest hour today".
+      const fill = p < 0 ? "var(--yellow)"
+                  : i === lo ? "var(--green-e)"
                   : i === hi ? "var(--red-e)"
                   : (p < meanP ? `color-mix(in srgb, var(--green-e) ${Math.round(40 - dev * 40)}%, transparent)`
                               : `color-mix(in srgb, var(--red-e) ${Math.round(40 + dev * 40)}%, transparent)`);
       const stroke = (i === lo || i === hi) ? "currentColor" : "none";
-      return `<rect x="${x + 0.5}" y="${y}" width="${Math.max(0.1, barW - 1)}" height="${h}"
+      return `<rect x="${x + 0.5}" y="${top}" width="${Math.max(0.1, barW - 1)}" height="${h}"
                     fill="${fill}" data-idx="${i}"
                     style="${i === lo ? 'color: var(--green-e)' : i === hi ? 'color: var(--red-e)' : ''}"
                     stroke="${stroke}" stroke-width="${stroke === 'none' ? 0 : 1}" />`;
@@ -301,14 +421,13 @@ class FtwPriceChart extends FtwElement {
     if (n > 0) {
       const startT = items[0].tsMs;
       const endT = items[n - 1].tsMs + items[n - 1].lenMin * 60_000;
-      const step = 3 * 3600_000;
-      for (let t = ceilTo(startT, step); t < endT; t += step) {
+      for (let t = ceilTo(startT, tickStepMs); t < endT; t += tickStepMs) {
         const frac = (t - startT) / (endT - startT);
         const x = pad.l + frac * plotW;
         xTicks.push(`<line x1="${x}" x2="${x}" y1="${pad.t + plotH}" y2="${pad.t + plotH + 4}"
                           stroke="var(--line)" />
-                     <text x="${x}" y="${pad.t + plotH + 16}" text-anchor="middle"
-                           fill="var(--fg-muted)" font-family="var(--mono)" font-size="10">
+                     <text x="${x}" y="${pad.t + plotH + tickLabelDy}" text-anchor="middle"
+                           fill="var(--fg-label)" font-family="var(--mono)" font-size="${fsAxis}">
                        ${fmtClock(t)}
                      </text>`);
       }
@@ -319,7 +438,7 @@ class FtwPriceChart extends FtwElement {
       { y: meanY,       text: roundOre(meanP) + " ö" },
       { y: yToPx(yMin), text: roundOre(yMin) + " ö" },
     ].map((l) => `<text x="${pad.l - 4}" y="${l.y + 3}" text-anchor="end"
-                       fill="var(--fg-muted)" font-family="var(--mono)" font-size="10">${l.text}</text>`).join("");
+                       fill="var(--fg-label)" font-family="var(--mono)" font-size="${fsAxis}">${l.text}</text>`).join("");
 
     // "Now" marker — vertical line plus a "now" pill.
     let nowMarker = "";
@@ -329,18 +448,53 @@ class FtwPriceChart extends FtwElement {
         <line x1="${x}" x2="${x}" y1="${pad.t}" y2="${pad.t + plotH}"
               stroke="var(--accent-e)" stroke-width="1.5" stroke-dasharray="2 3"
               opacity="0.7" />
-        <text x="${x}" y="${pad.t - 4}" text-anchor="middle"
-              fill="var(--accent-e)" font-family="var(--mono)" font-size="10"
+        <text x="${x}" y="${pad.t - 6}" text-anchor="middle"
+              fill="var(--accent-e)" font-family="var(--mono)" font-size="${fsNow}"
               font-weight="600">NOW</text>
       `;
+    }
+
+    // Tomorrow boundary — yellow vertical line at midnight when the
+    // chart spans across the day boundary, with a rotated "TOMORROW"
+    // label hugging it. Only renders when the data actually crosses
+    // 00:00 (so single-day "Today only" views don't get a stray line
+    // at the right edge).
+    let dayBoundary = "";
+    if (n > 0) {
+      const tomorrow = new Date();
+      tomorrow.setHours(0, 0, 0, 0);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const midnightMs = tomorrow.getTime();
+      const startT = items[0].tsMs;
+      const endT = items[n - 1].tsMs + items[n - 1].lenMin * 60_000;
+      if (midnightMs > startT && midnightMs < endT) {
+        const frac = (midnightMs - startT) / (endT - startT);
+        const x = pad.l + frac * plotW;
+        const tx = x + 4;
+        const ty = pad.t + 6;
+        dayBoundary = `
+          <line x1="${x}" x2="${x}" y1="${pad.t}" y2="${pad.t + plotH}"
+                stroke="var(--yellow)" stroke-width="1.5" opacity="0.8" />
+          <text x="${tx}" y="${ty}" text-anchor="start"
+                fill="var(--yellow)" font-family="var(--mono)" font-size="10"
+                font-weight="600" letter-spacing="0.18em"
+                transform="rotate(90 ${tx} ${ty})">TOMORROW</text>
+        `;
+      }
     }
 
     // Peak / low markers — small triangles above their bars.
     const markBar = (idx, color, glyph) => {
       const x = pad.l + (idx + 0.5) * barW;
-      const y = yToPx(prices[idx]) - 6;
+      const p = prices[idx];
+      // For negative-priced slots the bar extends downward from zero,
+      // so anchoring the marker at the price's y would bury it inside
+      // the bar. Pin to just above the zero line instead so the
+      // glyph still reads as a pointer at the column.
+      const baseY = p < 0 ? zeroY : yToPx(p);
+      const y = baseY - 6;
       return `<text x="${x}" y="${y}" text-anchor="middle"
-                    fill="${color}" font-family="var(--mono)" font-size="11"
+                    fill="${color}" font-family="var(--mono)" font-size="${fsMark}"
                     font-weight="700">${glyph}</text>`;
     };
 
@@ -359,11 +513,14 @@ class FtwPriceChart extends FtwElement {
              role="img" aria-label="Electricity price chart">
           ${meanLine}
           ${bars}
+          ${dayBoundary}
           ${nowMarker}
           ${markBar(lo, "var(--green-e)", "▼")}
           ${markBar(hi, "var(--red-e)",   "▲")}
           ${xTicks.join("")}
           ${yLabels}
+          <line class="scrub-cursor" x1="0" x2="0" y1="${pad.t}" y2="${pad.t + plotH}"
+                stroke="var(--fg)" stroke-width="1" opacity="0" />
           ${hits}
         </svg>
         <div class="tip" data-tip>
@@ -376,13 +533,26 @@ class FtwPriceChart extends FtwElement {
 
   afterRender() {
     const root = this.shadowRoot;
-    const toggle = root.querySelector(".toggle");
-    if (toggle) {
-      toggle.querySelectorAll("button[data-vat]").forEach((b) => {
+    const vatToggle = root.querySelector(".toggle[data-vat]");
+    if (vatToggle) {
+      vatToggle.querySelectorAll("button[data-vat]").forEach((b) => {
         b.addEventListener("click", () => {
           const next = b.dataset.vat === "on";
           if (next === this._vatOn) return;
           this._vatOn = next;
+          writeVatPref(next);
+          this.update();
+        });
+      });
+    }
+    const horizonToggle = root.querySelector(".toggle[data-horizon]");
+    if (horizonToggle) {
+      horizonToggle.querySelectorAll("button[data-horizon]").forEach((b) => {
+        b.addEventListener("click", () => {
+          const next = b.dataset.horizon;
+          if (next === this._horizon) return;
+          this._horizon = next;
+          writeHorizonPref(next);
           this.update();
         });
       });
@@ -391,27 +561,107 @@ class FtwPriceChart extends FtwElement {
     const svg = root.querySelector("svg.chart");
     const tip = root.querySelector("[data-tip]");
     if (!svg || !tip || !this._data) return;
-    const onMove = (e) => {
+    const onMouseMove = (e) => {
+      if (this._isTouching) return; // touch path owns the tooltip
       const target = e.target.closest("[data-idx]");
       if (!target) { this._hideTip(); return; }
       const i = Number(target.dataset.idx);
       if (!Number.isFinite(i)) { this._hideTip(); return; }
-      this._showTip(i, e);
+      const rect = svg.getBoundingClientRect();
+      this._showTipAt(i, e.clientX - rect.left, e.clientY - rect.top);
     };
-    svg.addEventListener("mousemove", onMove);
-    svg.addEventListener("mouseleave", () => this._hideTip());
+    svg.addEventListener("mousemove", onMouseMove);
+    svg.addEventListener("mouseleave", () => { if (!this._isTouching) this._hideTip(); });
+
+    // Touch — long-press to enter scrub mode, then drag horizontally
+    // to walk the tooltip across slots. The 250 ms threshold lets a
+    // regular vertical swipe-to-scroll pass through unmolested; if
+    // the finger moves >10 px before the timer fires, we cancel
+    // (gesture is a scroll, not a press).
+    let pressTimer = null;
+    let scrubbing = false;
+    let startX = 0, startY = 0;
+    const SCRUB_DELAY_MS = 250;
+    const SCRUB_TOLERANCE_PX = 10;
+
+    const cancelPress = () => {
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    };
+    const enterScrub = () => {
+      pressTimer = null;
+      scrubbing = true;
+      if (navigator.vibrate) { try { navigator.vibrate(8); } catch (_) {} }
+      const idx = this._idxFromClientX(startX);
+      if (idx >= 0) {
+        const rect = svg.getBoundingClientRect();
+        this._showTipAt(idx, startX - rect.left, startY - rect.top);
+      }
+    };
+    const endTouch = () => {
+      cancelPress();
+      if (scrubbing) {
+        scrubbing = false;
+        this._hideTip();
+      }
+      // Defer clearing _isTouching past the synthesized mouse events
+      // that fire after touchend on iOS/Android — without this the
+      // tooltip flashes back open as the page settles.
+      setTimeout(() => { this._isTouching = false; }, 400);
+    };
+
+    svg.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) { cancelPress(); return; }
+      const t = e.touches[0];
+      startX = t.clientX;
+      startY = t.clientY;
+      this._isTouching = true;
+      cancelPress();
+      pressTimer = setTimeout(enterScrub, SCRUB_DELAY_MS);
+    }, { passive: true });
+
+    svg.addEventListener("touchmove", (e) => {
+      if (e.touches.length !== 1) return;
+      const t = e.touches[0];
+      if (!scrubbing) {
+        if (Math.hypot(t.clientX - startX, t.clientY - startY) > SCRUB_TOLERANCE_PX) {
+          cancelPress();
+        }
+        return;
+      }
+      // In scrub mode — block page scroll and walk the tooltip.
+      e.preventDefault();
+      const idx = this._idxFromClientX(t.clientX);
+      if (idx < 0) return;
+      const rect = svg.getBoundingClientRect();
+      this._showTipAt(idx, t.clientX - rect.left, t.clientY - rect.top);
+    }, { passive: false });
+
+    svg.addEventListener("touchend", endTouch);
+    svg.addEventListener("touchcancel", endTouch);
   }
 
-  _showTip(idx, e) {
+  _idxFromClientX(clientX) {
+    const svg = this.shadowRoot.querySelector("svg.chart");
+    if (!svg || !this._geom) return -1;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0) return -1;
+    const vbX = ((clientX - rect.left) / rect.width) * this._geom.W;
+    const barW = this._geom.plotW / this._geom.n;
+    const i = Math.floor((vbX - this._geom.padL) / barW);
+    if (i < 0 || i >= this._geom.n) return -1;
+    return i;
+  }
+
+  _showTipAt(idx, localX, localY) {
     const tip = this.shadowRoot.querySelector("[data-tip]");
-    const item = this._data.items[idx];
+    const item = this._data && this._data.items[idx];
     if (!tip || !item) return;
     const price = this._priceFor(item);
     const tEnd = item.tsMs + item.lenMin * 60_000;
     tip.querySelector("[data-tip-time]").textContent =
       `${fmtClock(item.tsMs)}–${fmtClock(tEnd)}`;
     const priceEl = tip.querySelector("[data-tip-price]");
-    priceEl.textContent = `${roundOre(price)} öre / kWh`;
+    priceEl.textContent = `${roundOre(price)} öre`;
     // Annotate peak/low per the same indices used in render.
     const items = this._data.items;
     const prices = items.map((it) => this._priceFor(it));
@@ -422,19 +672,105 @@ class FtwPriceChart extends FtwElement {
     }
     priceEl.classList.toggle("peak", idx === hi);
     priceEl.classList.toggle("low",  idx === lo);
-    // Position the tooltip at the cursor's X, anchored above.
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    tip.style.left = x + "px";
-    tip.style.top  = y + "px";
+    // On small screens the tooltip is pinned above the bars and tracks
+    // slot centre, not finger Y — keeps the readout clear of the data
+    // it's reading. Desktop keeps the cursor-follow behaviour.
+    const smallScreen = typeof window !== "undefined" &&
+      window.matchMedia && window.matchMedia("(max-width: 600px)").matches;
+    if (smallScreen && this._geom) {
+      const svg = this.shadowRoot.querySelector("svg.chart");
+      const svgRect = svg ? svg.getBoundingClientRect() : null;
+      const slotVbX = this._geom.padL + (idx + 0.5) * (this._geom.plotW / this._geom.n);
+      const slotPxX = svgRect && svgRect.width
+        ? (slotVbX / this._geom.W) * svgRect.width
+        : localX;
+      // Clamp so the tooltip never runs off the chart's left/right edge.
+      const halfW = ((tip.getBoundingClientRect().width) || 120) / 2;
+      const wrapW = svgRect ? svgRect.width : 1000;
+      const clampedX = Math.max(halfW + 4, Math.min(wrapW - halfW - 4, slotPxX));
+      tip.style.left = clampedX + "px";
+      tip.style.top  = "0px";
+    } else {
+      tip.style.left = localX + "px";
+      tip.style.top  = localY + "px";
+    }
     tip.classList.add("visible");
+    // Vertical scrub cursor — pin it to the slot centre so the eye
+    // can confirm which column the tooltip is reading from.
+    const cursor = this.shadowRoot.querySelector("svg .scrub-cursor");
+    if (cursor && this._geom) {
+      const slotX = this._geom.padL + (idx + 0.5) * (this._geom.plotW / this._geom.n);
+      cursor.setAttribute("x1", slotX);
+      cursor.setAttribute("x2", slotX);
+      cursor.setAttribute("opacity", "0.5");
+    }
   }
 
   _hideTip() {
     const tip = this.shadowRoot.querySelector("[data-tip]");
     if (tip) tip.classList.remove("visible");
+    const cursor = this.shadowRoot.querySelector("svg .scrub-cursor");
+    if (cursor) cursor.setAttribute("opacity", "0");
   }
+}
+
+const VAT_PREF_KEY = "ftw.priceChart.vatOn";
+function readVatPref() {
+  try {
+    const v = localStorage.getItem(VAT_PREF_KEY);
+    if (v === "0" || v === "false") return false;
+    if (v === "1" || v === "true")  return true;
+  } catch (_) { /* private mode / disabled storage — fall through */ }
+  return true;
+}
+function writeVatPref(on) {
+  try { localStorage.setItem(VAT_PREF_KEY, on ? "1" : "0"); } catch (_) {}
+}
+
+const HORIZON_PREF_KEY = "ftw.priceChart.horizon";
+function readHorizonPref() {
+  try {
+    const v = localStorage.getItem(HORIZON_PREF_KEY);
+    if (v === "today" || v === "all" || v === "tomorrow") return v;
+  } catch (_) {}
+  return "all";
+}
+function writeHorizonPref(h) {
+  try { localStorage.setItem(HORIZON_PREF_KEY, h); } catch (_) {}
+}
+
+// Filter to slots whose start time falls inside today's calendar day
+// (local timezone). Used for the "Today only" toggle position.
+function filterToday(items) {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  const t0 = start.getTime(), t1 = end.getTime();
+  return items.filter((it) => it.tsMs >= t0 && it.tsMs < t1);
+}
+
+// Filter to slots whose start time falls inside tomorrow's calendar
+// day (local timezone). Used for the "Tomorrow only" toggle position.
+function filterTomorrow(items) {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() + 1);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  const t0 = start.getTime(), t1 = end.getTime();
+  return items.filter((it) => it.tsMs >= t0 && it.tsMs < t1);
+}
+
+// True if any slot starts on tomorrow's calendar day (local timezone) —
+// drives whether the today/tomorrow toggle is meaningful at all.
+function itemsIncludeTomorrow(items) {
+  if (!items || !items.length) return false;
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() + 1);
+  const t0 = start.getTime();
+  return items.some((it) => it.tsMs >= t0);
 }
 
 function fmtClock(tsMs) {

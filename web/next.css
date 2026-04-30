@@ -494,6 +494,19 @@ body.ftw-next .history-tiles.hidden,
 body.ftw-next .history-cake.hidden { display: none; }
 body.ftw-next .history-cake {
   padding: 4px 0 6px;
+  transition: opacity 200ms ease;
+}
+/* Loading state — fired while /api/energy/daily resolves on a
+   Week/Month flip. Dims + pulses the existing cake (so the layout
+   stays put) instead of swapping in a skeleton. Pointer-events off
+   prevents stale interactions during the in-flight request. */
+body.ftw-next .history-cake.loading {
+  pointer-events: none;
+  animation: ftw-cake-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ftw-cake-pulse {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 0.7; }
 }
 /* Shared Week/Month segmented pill — same visual as the per-card
    toggle that used to live inside the shadow DOM so the brand
