@@ -492,19 +492,21 @@
         }
       });
 
-      // PV self-consumed share: of all PV produced today, what fraction
-      // stayed in the house (didn't go to grid). Clamped 0..100 because
-      // export can briefly exceed pv on a meter-resolution glitch.
-      var selfConsumedPvPct = null;
-      if (pvKwhTotal > 0.001) {
-        selfConsumedPvPct = Math.max(0, Math.min(100,
-          (1 - exportKwh / pvKwhTotal) * 100));
+      // Self-powered today: share of consumption sourced from PV /
+      // battery over the whole day. Mirrors the realtime
+      // selfPoweredPct the energy-flow component computes from
+      // current planet power, so the two hub lines are directly
+      // comparable. Clamped 0..100 because metering glitches can
+      // briefly report import > load.
+      var selfPoweredPctToday = null;
+      if (loadKwhTotal > 0.001) {
+        selfPoweredPctToday = Math.max(0, Math.min(100,
+          (1 - importKwh / loadKwhTotal) * 100));
       }
       flowEl.setReadings({
         load:    (data.load_w || 0) / 1000,
         planets: planets,
-        loadKwhToday:      loadKwhTotal,
-        selfConsumedPvPct: selfConsumedPvPct,
+        selfPoweredPctToday: selfPoweredPctToday,
       });
     }
 

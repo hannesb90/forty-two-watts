@@ -539,11 +539,12 @@ class FtwEnergyFlow extends FtwElement {
     if (r.load != null)         this._readings.load    = r.load;
     if (Array.isArray(r.planets)) this._readings.planets = r.planets;
     // Optional today's-totals payload pushed through to the central
-    // hub render: kWh consumed since midnight + share of PV that
-    // stayed in the house (self-consumed). Both are nullable —
-    // missing fields just hide the corresponding hub line.
-    if (r.loadKwhToday !== undefined)        this._readings.loadKwhToday = r.loadKwhToday;
-    if (r.selfConsumedPvPct !== undefined)   this._readings.selfConsumedPvPct = r.selfConsumedPvPct;
+    // hub render. selfPoweredPctToday is the share of consumption
+    // sourced from PV/battery (i.e. NOT the grid) over the whole
+    // day — parallel to the live `selfPoweredPct` the component
+    // computes from current planet power. Nullable; if missing, the
+    // hub just hides that line.
+    if (r.selfPoweredPctToday !== undefined) this._readings.selfPoweredPctToday = r.selfPoweredPctToday;
     // `?delay=N` (dev hook) holds the loading state for N ms after the
     // first setReadings call so the shimmer + fade-in can be inspected.
     // Subsequent calls (once loaded) apply immediately.
@@ -1024,13 +1025,26 @@ class FtwEnergyFlow extends FtwElement {
     // Hdyn becomes empty space beneath the bottom-center cluster,
     // not centered letter-boxing.
     const cy = (Hdyn - bottomExtra) / 2;
+    // Hub vertical layout — five rows stacked from top to bottom:
+    //   1. icon              (raised so the lengthier text labels below
+    //                         have headroom; was hubIconY)
+    //   2. realtime power    (the big number)
+    //   3. self-powered NOW  (% from non-grid right now)
+    //   4. self-powered TODAY (% across the whole day)
+    //   5. CONSUMING / "status" label
+    //
+    // Spread spacing: equal vertical gaps between rows so the eye
+    // reads top-to-bottom without any pair feeling glued. Compact
+    // viewports tighten the stack proportionally.
+    const compact = this._compact;
     const P = {
       vbX, vbW, H: Hdyn, cy,
       orbitR, baseR: tier.baseR, hubR: tier.hubR,
-      hubIconY: cy - (this._compact ? 49 : 50),
-      hubValueY: cy + 10,
-      hubLabelY: cy + (this._compact ? 34 : 36),
-      hubSubY:   cy + (this._compact ? 50 : 54),
+      hubIconY:      cy - (compact ? 60 : 62),
+      hubValueY:     cy - (compact ? 16 : 18),
+      hubSelfNowY:   cy + (compact ? 4  : 6),
+      hubSelfTodayY: cy + (compact ? 22 : 24),
+      hubLabelY:     cy + (compact ? 42 : 46),
     };
     // -- /Dynamic sizing -------------------------------------------------
 
@@ -1108,32 +1122,20 @@ class FtwEnergyFlow extends FtwElement {
                 fill="var(--hero-load-text)" class="sv-hub-value">
             ${fmtKw(load)}
           </text>
+          ${selfPoweredPct !== null ? `
+          <text x="${CX}" y="${P.hubSelfNowY}" text-anchor="middle"
+                fill="var(--hero-sub-text)" class="sv-hub-sub">
+            ${Math.round(selfPoweredPct)}% SELF-POWERED NOW
+          </text>` : ""}
+          ${this._readings.selfPoweredPctToday != null ? `
+          <text x="${CX}" y="${P.hubSelfTodayY}" text-anchor="middle"
+                fill="var(--hero-sub-text)" class="sv-hub-sub">
+            ${Math.round(this._readings.selfPoweredPctToday)}% SELF-POWERED TODAY
+          </text>` : ""}
           <text x="${CX}" y="${P.hubLabelY}" text-anchor="middle"
                 fill="var(--hero-label-text)" class="sv-hub-label">
             CONSUMING
           </text>
-          ${(() => {
-            // Hub sub-lines: today's total used (kWh) and the share of
-            // PV that stayed in the house. Falls back to the live
-            // self-powered percent when daily totals aren't available
-            // yet (e.g. backend warm-up).
-            const lines = [];
-            if (this._readings.loadKwhToday != null) {
-              lines.push(`${formatKwhTotal(this._readings.loadKwhToday)} USED TODAY`);
-            }
-            if (this._readings.selfConsumedPvPct != null) {
-              lines.push(`${Math.round(this._readings.selfConsumedPvPct)}% PV SELF-CONSUMED`);
-            } else if (selfPoweredPct !== null) {
-              lines.push(`${Math.round(selfPoweredPct)}% SELF-POWERED`);
-            }
-            const lineGap = 11;
-            return lines.map((txt, i) => `
-              <text x="${CX}" y="${P.hubSubY + i * lineGap}" text-anchor="middle"
-                    fill="var(--hero-sub-text)" class="sv-hub-sub">
-                ${escapeXml(txt)}
-              </text>
-            `).join("");
-          })()}
         </g>
       </svg>
     `;
@@ -1477,17 +1479,6 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
 }
 
 // ---------- primitives ----------
-
-// Daily kWh totals — terser than fmtKw because hub + planets show
-// kWh-since-midnight that grow throughout the day. Two decimals only
-// while still small (< 10 kWh — early morning / quick reads), one
-// decimal as the day progresses (keeps the line from getting noisy).
-function formatKwhTotal(kwh) {
-  if (kwh == null || !isFinite(kwh)) return "—";
-  if (Math.abs(kwh) >= 100) return `${kwh.toFixed(0)} kWh`;
-  if (Math.abs(kwh) >= 10) return `${kwh.toFixed(1)} kWh`;
-  return `${kwh.toFixed(2)} kWh`;
-}
 
 function fmtKw(kw) {
   // Input is kilowatts. Sub-kW values render as plain integer watts
