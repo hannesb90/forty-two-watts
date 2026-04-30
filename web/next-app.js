@@ -2100,7 +2100,11 @@
 
   function fetchHistoryCake() {
     if (!historyCakeEl || typeof historyCakeEl.setTotals !== "function") return;
+    if (historyCakeWrap) historyCakeWrap.classList.add("loading");
     var days = historyState.range === "month" ? 30 : 7;
+    var clearLoading = function () {
+      if (historyCakeWrap) historyCakeWrap.classList.remove("loading");
+    };
     fetch("/api/energy/daily?days=" + days)
       .then(function (r) { return r.json(); })
       .then(function (j) {
@@ -2114,7 +2118,8 @@
         }
         historyCakeEl.setTotals(totals);
       })
-      .catch(function () { /* network blip — leave the previous render */ });
+      .catch(function () { /* network blip — leave the previous render */ })
+      .then(clearLoading, clearLoading);
   }
 
   if (historyToggle) {
