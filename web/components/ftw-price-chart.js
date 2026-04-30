@@ -294,12 +294,14 @@ class FtwPriceChart extends FtwElement {
                           stroke="var(--fg-muted)" stroke-width="1.5"
                           stroke-linecap="round" stroke-dasharray="0.01 6" />`;
 
-    // X-axis time ticks — every 6 hours.
+    // X-axis time ticks — every 3 hours so 48 h reads as ~16 evenly
+    // spaced labels, not the 8-label sparse grid we had before.
+    // Operators kept asking "what hour is this?" mid-chart.
     const xTicks = [];
     if (n > 0) {
       const startT = items[0].tsMs;
       const endT = items[n - 1].tsMs + items[n - 1].lenMin * 60_000;
-      const step = 6 * 3600_000;
+      const step = 3 * 3600_000;
       for (let t = ceilTo(startT, step); t < endT; t += step) {
         const frac = (t - startT) / (endT - startT);
         const x = pad.l + frac * plotW;
