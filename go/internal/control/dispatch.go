@@ -1576,17 +1576,22 @@ func forceFuseDischarge(
 	}
 	predicted := currentGrid - currentBat + sumTarget
 
-	// Per-phase overage trumps aggregate when bigger. Same balanced-3Φ
-	// assumption as applyFuseGuard (× 3 multiplier on the worst-phase
-	// W to get the equivalent total-battery W needed).
-	perPhaseOverage := perPhaseOverageW(store, state) * 3.0
 	effFuseW := fuseMaxW - state.fuseSafetyMarginW()
 	if effFuseW < 0 {
 		effFuseW = 0
 	}
 	overage := predicted - effFuseW
-	if perPhaseOverage > overage {
-		overage = perPhaseOverage
+	// Per-phase overage trumps aggregate when bigger — but ONLY on the
+	// import side. perPhaseOverageW is direction-agnostic (uses |amps|),
+	// so an export-side phase trip would otherwise cause this function
+	// to command MORE discharge, pushing the over-current phase further
+	// over the breaker. applyFuseGuard's exportOverage branch already
+	// shrinks discharge for that case before we run.
+	if predicted >= 0 {
+		perPhaseOverage := perPhaseOverageW(store, state) * 3.0
+		if perPhaseOverage > overage {
+			overage = perPhaseOverage
+		}
 	}
 	if overage <= 0 {
 		return targets

@@ -1121,7 +1121,9 @@ func main() {
 
 	// ---- Control loop ----
 	controlInterval := time.Duration(cfg.Site.ControlIntervalS) * time.Second
-	fuseMaxW := cfg.Fuse.MaxPowerW()
+	// fuseMaxW is recomputed per tick from ctrl.SiteFuse* under ctrlMu —
+	// the configreload watcher updates those fields directly, so a
+	// startup snapshot here would go stale on the first hot-reload.
 	dtS := float64(cfg.Site.ControlIntervalS)
 
 	// Graceful shutdown
@@ -1226,6 +1228,7 @@ func main() {
 			capMu.RUnlock()
 
 			ctrlMu.Lock()
+			fuseMaxW := ctrl.SiteFuseAmps * ctrl.SiteFuseVoltage * float64(ctrl.SiteFusePhases)
 			targets := control.ComputeDispatch(tel, ctrl, capsSnap, fuseMaxW)
 			ctrlMu.Unlock()
 

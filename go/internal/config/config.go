@@ -816,6 +816,17 @@ func (c *Config) Validate() error {
 	if c.Fuse.MaxAmps <= 0 {
 		return errors.New("fuse.max_amps must be > 0")
 	}
+	// safety_margin_a must be in [0, max_amps). Negative would *raise*
+	// the per-phase threshold above the breaker rating (defeating the
+	// guard); >= max_amps zeroes out the headroom and silently disables
+	// the per-phase clamp — both are real safety holes if reached
+	// through a typo'd config.
+	if c.Fuse.SafetyMarginA < 0 {
+		return errors.New("fuse.safety_margin_a must be >= 0")
+	}
+	if c.Fuse.SafetyMarginA >= c.Fuse.MaxAmps {
+		return errors.New("fuse.safety_margin_a must be < fuse.max_amps")
+	}
 	if n := c.Notifications; n != nil {
 		if n.DefaultPriority < 0 || n.DefaultPriority > 5 {
 			return errors.New("notifications.default_priority must be in [0,5]")
