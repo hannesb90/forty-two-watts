@@ -409,7 +409,13 @@
         { text: "↓ " + fmtKwhShort(importKwh), color: "var(--red-e)",   bold: true },
         { text: "↑ " + fmtKwhShort(exportKwh), color: "var(--green-e)", bold: true },
       ];
-      var batDailyStr  = "↑ " + fmtKwhShort(batChargedKwh) + "  ↓ " + fmtKwhShort(batDischargedKwh);
+      // Battery daily totals share the grid's colour discipline:
+      // charge (energy stored) green, discharge (energy spent) red.
+      // Reads at a glance whether the day was a net-fill or net-drain.
+      var batDailyParts = [
+        { text: "↑ " + fmtKwhShort(batChargedKwh),    color: "var(--green-e)", bold: true },
+        { text: "↓ " + fmtKwhShort(batDischargedKwh), color: "var(--red-e)",   bold: true },
+      ];
 
       // Grid — single utility, bottom-left corner. Import = toward house.
       var gkw = (data.grid_w || 0) / 1000;
@@ -454,7 +460,7 @@
             sub: bIdle ? "idle" :
                  (bKw >= 0 ? "charging" : "discharging"),
             soc: d.bat_soc != null ? Math.round(d.bat_soc * 100) : null,
-            dailyKwh: batDailyStr,
+            dailyKwhParts: batDailyParts,
           });
         }
         // EV — always consumes from the house side. When a loadpoint
