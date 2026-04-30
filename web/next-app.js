@@ -280,6 +280,16 @@
     if (kwh >= 10) return kwh.toFixed(1) + " kWh";
     return kwh.toFixed(2) + " kWh";
   }
+  // Compact kWh — bubble lines that pack two arrows ("↓ 5.2 ↑ 12") need
+  // tighter formatting than the standalone tile reading. Drops the "kWh"
+  // unit (already implied by the bubble label "kWh today" elsewhere).
+  function fmtKwhShort(kwh) {
+    if (kwh == null || !isFinite(kwh)) return "—";
+    var v = Math.abs(kwh);
+    if (v >= 100) return kwh.toFixed(0);
+    if (v >= 10)  return kwh.toFixed(1);
+    return kwh.toFixed(2);
+  }
 
   function statusClass(status) {
     if (!status) return "status-offline";
@@ -378,6 +388,20 @@
     if (flowEl && typeof flowEl.setReadings === "function") {
       var planets = [];
 
+      // Today's totals (aggregate across drivers; per-driver split
+      // isn't in the API). The same string lands on every same-role
+      // planet so the aggregation layer can pick it up cleanly.
+      var todayE = (data.energy && data.energy.today) || {};
+      var importKwh   = (todayE.import_wh || 0) / 1000;
+      var exportKwh   = (todayE.export_wh || 0) / 1000;
+      var pvKwhTotal  = (todayE.pv_wh || 0) / 1000;
+      var loadKwhTotal = (todayE.load_wh || 0) / 1000;
+      var batChargedKwh    = (todayE.bat_charged_wh || 0) / 1000;
+      var batDischargedKwh = (todayE.bat_discharged_wh || 0) / 1000;
+      var pvDailyStr   = "↑ " + fmtKwhShort(pvKwhTotal);
+      var gridDailyStr = "↓ " + fmtKwhShort(importKwh) + "  ↑ " + fmtKwhShort(exportKwh);
+      var batDailyStr  = "↑ " + fmtKwhShort(batChargedKwh) + "  ↓ " + fmtKwhShort(batDischargedKwh);
+
       // Grid — single utility, bottom-left corner. Import = toward house.
       var gkw = (data.grid_w || 0) / 1000;
       var gIdle = isFlowIdle(gkw);
@@ -388,6 +412,7 @@
                (gkw >= 0 ? "var(--red-e)" : "var(--green-e)"),
         sub: gIdle ? "balanced" :
              (gkw >= 0 ? "importing" : "exporting"),
+        dailyKwh: gridDailyStr,
       });
 
       var drvs = data.drivers || {};
@@ -405,6 +430,7 @@
             kw: pvKw, toHub: true,
             color: pvGen ? "var(--amber)" : "var(--fg-muted)",
             sub: pvGen ? "generating" : "idle",
+            dailyKwh: pvDailyStr,
           });
         }
         // Battery — sign shows charge/discharge. Discharge flows toward
@@ -419,6 +445,7 @@
             sub: bIdle ? "idle" :
                  (bKw >= 0 ? "charging" : "discharging"),
             soc: d.bat_soc != null ? Math.round(d.bat_soc * 100) : null,
+            dailyKwh: batDailyStr,
           });
         }
         // EV — always consumes from the house side. When a loadpoint
@@ -462,9 +489,19 @@
         }
       });
 
+      // PV self-consumed share: of all PV produced today, what fraction
+      // stayed in the house (didn't go to grid). Clamped 0..100 because
+      // export can briefly exceed pv on a meter-resolution glitch.
+      var selfConsumedPvPct = null;
+      if (pvKwhTotal > 0.001) {
+        selfConsumedPvPct = Math.max(0, Math.min(100,
+          (1 - exportKwh / pvKwhTotal) * 100));
+      }
       flowEl.setReadings({
         load:    (data.load_w || 0) / 1000,
         planets: planets,
+        loadKwhToday:      loadKwhTotal,
+        selfConsumedPvPct: selfConsumedPvPct,
       });
     }
 

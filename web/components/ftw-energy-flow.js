@@ -538,6 +538,12 @@ class FtwEnergyFlow extends FtwElement {
   setReadings(r) {
     if (r.load != null)         this._readings.load    = r.load;
     if (Array.isArray(r.planets)) this._readings.planets = r.planets;
+    // Optional today's-totals payload pushed through to the central
+    // hub render: kWh consumed since midnight + share of PV that
+    // stayed in the house (self-consumed). Both are nullable —
+    // missing fields just hide the corresponding hub line.
+    if (r.loadKwhToday !== undefined)        this._readings.loadKwhToday = r.loadKwhToday;
+    if (r.selfConsumedPvPct !== undefined)   this._readings.selfConsumedPvPct = r.selfConsumedPvPct;
     // `?delay=N` (dev hook) holds the loading state for N ms after the
     // first setReadings call so the shimmer + fade-in can be inspected.
     // Subsequent calls (once loaded) apply immediately.
@@ -619,6 +625,7 @@ class FtwEnergyFlow extends FtwElement {
         name: p.name || "",
         id: p.id,
         aggregated: !!p.aggregated,
+        dailyKwh: p.placeholder ? null : (p.dailyKwh || null),
       })
     ).join("");
     return `<g class="ef-layer ef-layer-${layerClass}">` +
@@ -1105,11 +1112,28 @@ class FtwEnergyFlow extends FtwElement {
                 fill="var(--hero-label-text)" class="sv-hub-label">
             CONSUMING
           </text>
-          ${selfPoweredPct !== null ? `
-          <text x="${CX}" y="${P.hubSubY}" text-anchor="middle"
-                fill="var(--hero-sub-text)" class="sv-hub-sub">
-            ${Math.round(selfPoweredPct)}% SELF-POWERED
-          </text>` : ""}
+          ${(() => {
+            // Hub sub-lines: today's total used (kWh) and the share of
+            // PV that stayed in the house. Falls back to the live
+            // self-powered percent when daily totals aren't available
+            // yet (e.g. backend warm-up).
+            const lines = [];
+            if (this._readings.loadKwhToday != null) {
+              lines.push(`${formatKwhTotal(this._readings.loadKwhToday)} USED TODAY`);
+            }
+            if (this._readings.selfConsumedPvPct != null) {
+              lines.push(`${Math.round(this._readings.selfConsumedPvPct)}% PV SELF-CONSUMED`);
+            } else if (selfPoweredPct !== null) {
+              lines.push(`${Math.round(selfPoweredPct)}% SELF-POWERED`);
+            }
+            const lineGap = 11;
+            return lines.map((txt, i) => `
+              <text x="${CX}" y="${P.hubSubY + i * lineGap}" text-anchor="middle"
+                    fill="var(--hero-sub-text)" class="sv-hub-sub">
+                ${escapeXml(txt)}
+              </text>
+            `).join("");
+          })()}
         </g>
       </svg>
     `;
@@ -1349,9 +1373,15 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
                             chargeLimit = null, socStale = false, socSource = null,
                             radius = 86,
                             clickable = false, role = "", name = "", id = "",
-                            aggregated = false }) {
+                            aggregated = false,
+                            dailyKwh = null }) {
   const r = radius;
   const { x, y } = pos;
+  // Daily totals line — empty string when no payload was passed (back-
+  // compat with callers that haven't been wired up yet). Drops out
+  // entirely on small planets (r < 50, e.g. 4+ planets clustered at
+  // one corner) so the disc text doesn't overflow.
+  const showDaily = dailyKwh && r >= 50;
   // Clickable planets must advertise themselves to assistive tech:
   // role=button so screen readers announce "button", and aria-label
   // derived from the visible title/name so the announcement names
@@ -1368,7 +1398,10 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
   const titleY = Math.round((twoLine ? -0.50 : -0.42) * r);
   const valueY = Math.round(0.09  * r);
   const subY   = Math.round(0.42  * r);
-  const socY   = Math.round(0.70  * r);
+  // Squeeze the SoC line down a touch when the daily-totals line is
+  // present so all three sub-rows fit cleanly within the disc.
+  const dailyY = Math.round(0.55  * r);
+  const socY   = Math.round(showDaily ? 0.78 * r : 0.70 * r);
   const titleSvg = twoLine
     ? `<text x="${x}" y="${y + titleY}" text-anchor="middle"
              fill="var(--hero-label-text)" class="sv-node-title">
@@ -1435,11 +1468,26 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
             fill="var(--hero-sub-text)" class="sv-node-sub">
         ${escapeXml(sub)}
       </text>
+      ${showDaily ? `<text x="${x}" y="${y + dailyY}" text-anchor="middle"
+            fill="var(--hero-sub-text)" class="sv-node-sub">
+        ${escapeXml(dailyKwh)}
+      </text>` : ""}
       ${socText}
     </g>`;
 }
 
 // ---------- primitives ----------
+
+// Daily kWh totals — terser than fmtKw because hub + planets show
+// kWh-since-midnight that grow throughout the day. Two decimals only
+// while still small (< 10 kWh — early morning / quick reads), one
+// decimal as the day progresses (keeps the line from getting noisy).
+function formatKwhTotal(kwh) {
+  if (kwh == null || !isFinite(kwh)) return "—";
+  if (Math.abs(kwh) >= 100) return `${kwh.toFixed(0)} kWh`;
+  if (Math.abs(kwh) >= 10) return `${kwh.toFixed(1)} kWh`;
+  return `${kwh.toFixed(2)} kWh`;
+}
 
 function fmtKw(kw) {
   // Input is kilowatts. Sub-kW values render as plain integer watts
@@ -1512,6 +1560,11 @@ function aggregateGroups(groups) {
       socSource = sources.includes("vehicle") ? "vehicle"
                 : sources.find(s => s === "inferred") || first.socSource || null;
     }
+    // Daily-kWh line on the aggregated bubble: prefer the first
+    // planet's value (callers push the aggregate-role daily total —
+    // e.g. household import_wh, fleet bat_charged_wh — onto every
+    // member of the group, so first wins). Falls back to nil silently.
+    const dailyKwh = first.dailyKwh || null;
     out[corner] = [{
       id: `agg-${corner}`,
       corner,
@@ -1527,6 +1580,7 @@ function aggregateGroups(groups) {
       socSource,
       name: `${group.length}×`,
       aggregated: true,
+      dailyKwh,
     }];
   }
   return out;
