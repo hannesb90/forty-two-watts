@@ -286,9 +286,13 @@ class FtwPriceChart extends FtwElement {
                     stroke="${stroke}" stroke-width="${stroke === 'none' ? 0 : 1}" />`;
     }).join("");
 
-    // Mean reference line — dashed, dimmed.
+    // Mean reference line — true dotted (round caps + zero-length
+    // dashes spaced by 6 px) so it reads as "average over the known
+    // price period" rather than a regular dashed grid line. Sits
+    // above the bars but below the markers and tooltip.
     const meanLine = `<line x1="${pad.l}" x2="${pad.l + plotW}" y1="${meanY}" y2="${meanY}"
-                          stroke="var(--line)" stroke-width="1" stroke-dasharray="3 4" />`;
+                          stroke="var(--fg-muted)" stroke-width="1.5"
+                          stroke-linecap="round" stroke-dasharray="0.01 6" />`;
 
     // X-axis time ticks — every 6 hours.
     const xTicks = [];
