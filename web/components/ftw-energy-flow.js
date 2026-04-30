@@ -1418,14 +1418,16 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
   const simple3 = showDaily && !showSub && !showSoc;
   let titleY, valueY, dailyY, subY, socY;
   if (simple3) {
-    // Symmetric three-row stack centred on y=0. Gap matches the
-    // legacy title-Y so SOLAR sits at the same height as planets in
-    // other corners — the eye reads all four corner titles at one
-    // horizontal level instead of solar's hovering lower.
-    const gap = (twoLine ? 0.50 : 0.42);
-    titleY = Math.round(-gap * r);
-    valueY = 0;
-    dailyY = Math.round(gap * r);
+    // Three-row stack with the title pinned at the legacy level
+    // (so SOLAR aligns horizontally with titles on other corners)
+    // and the power value biased a few pixels BELOW the disc
+    // midline — visual centre on the big number sits near the
+    // disc midline instead of riding above it. Per operator note:
+    // "solar big power should go down a couple of pixels, not same
+    // spacing between SOLAR and the kWh line".
+    titleY = Math.round((twoLine ? -0.50 : -0.42) * r);
+    valueY = Math.round(0.04 * r);
+    dailyY = Math.round(0.42 * r);
     subY = 0;
     socY = 0;
   } else {
@@ -1441,14 +1443,18 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
     const noSubButSoc = !showSub && showSoc;
     const noSocButSub = showSub && !showSoc;
     const compressed  = noSubButSoc || noSocButSub;
+    // Compact (≤600px) uses a wider value→daily gap than first
+    // tried (0.22 r → 0.32 r) — the larger CSS font sizes on small
+    // screens make 0.22 r feel cramped. Trailing rows shift down
+    // proportionally so the bubble bottom still sits inside the disc.
     const dailyR = compressed
-      ? (compact ? 0.22 : 0.30)
+      ? (compact ? 0.32 : 0.30)
       : (compact ? 0.32 : 0.50);
     const subR = noSocButSub
-      ? (compact ? 0.46 : 0.60)
+      ? (compact ? 0.55 : 0.60)
       : (showDaily ? (compact ? 0.55 : 0.66) : 0.42);
     const socR = noSubButSoc
-      ? (compact ? 0.46 : 0.52)
+      ? (compact ? 0.55 : 0.52)
       : (showDaily ? (compact ? 0.74 : 0.80) : 0.70);
     valueY = Math.round((showDaily ? 0.04 : 0.09) * r);
     dailyY = Math.round(dailyR * r);
