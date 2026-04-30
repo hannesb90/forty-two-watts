@@ -1044,7 +1044,10 @@ class FtwEnergyFlow extends FtwElement {
     const P = {
       vbX, vbW, H: Hdyn, cy,
       orbitR, baseR: tier.baseR, hubR: tier.hubR,
-      hubIconY:      cy - (compact ? 50 : 54),
+      // Compact viewports: lift the icon ~20 px further (cy − 50 →
+      // cy − 70) so the shrunken hub doesn't crowd the icon onto the
+      // power value.
+      hubIconY:      cy - (compact ? 70 : 54),
       hubValueY:     cy - (compact ? 8  : 10),
       hubSelfNowY:   cy + (compact ? 14 : 16),
       hubSelfTodayY: cy + (compact ? 32 : 34),
