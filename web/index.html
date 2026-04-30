@@ -329,7 +329,12 @@
       <!-- MPC Plan (right) -->
       <section id="plan-section">
         <div class="chart-header">
-          <h2>Plan</h2>
+          <div class="plan-title">
+            <h2>Plan</h2>
+            <button id="plan-help-btn" class="plan-help-btn" type="button"
+                    aria-label="Explain the numbers shown in the Plan section"
+                    title="What do these numbers mean?">?</button>
+          </div>
           <div class="plan-actions">
             <span id="plan-summary" class="plan-summary">…</span>
             <button id="plan-replan" class="btn-send" title="Force a fresh plan">Replan</button>
@@ -448,6 +453,63 @@
 
   <!-- Battery manual-hold popup — opened from the battery planet click. -->
   <ftw-battery-control id="battery-control"></ftw-battery-control>
+
+  <!-- Plan numbers — what they mean -->
+  <ftw-modal id="plan-help-modal" style="--ftw-modal-max-width:560px">
+    <span slot="title">What do these numbers mean?</span>
+    <div class="plan-help-body">
+      <p>
+        Everything the planner shows is in two units:
+        <b>öre/kWh</b> for prices (1 SEK = 100 öre) and
+        <b>SEK</b> for whole-horizon totals.
+      </p>
+
+      <h3>Header line</h3>
+      <ul>
+        <li><b>start SoC</b> — battery state of charge right now. The plan starts from this point.</li>
+        <li>
+          <b>expected cost / earnings</b> — total grid spend over the
+          full horizon (e.g. <code>48h</code>) at the planner's chosen schedule,
+          using real spot prices, grid tariff and VAT.
+          A <em>negative</em> number means the plan expects to <em>earn</em>
+          money (net export over the horizon).
+        </li>
+        <li><b>replanned … ago</b> — time since the last optimisation pass; the reason it ran is shown next to it.</li>
+      </ul>
+
+      <h3>Price bars (top of the chart)</h3>
+      <p>Each bar is one 15-minute slot, stacked as the three pieces of your real consumer price:</p>
+      <ul>
+        <li>
+          <span class="legend-color" style="background:rgba(148,163,184,0.72);display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle"></span>
+          <b>spot</b> — raw Nord Pool wholesale price. Colours green / slate / red by tercile across the horizon (cheap / mid / expensive). This is the part the planner actually optimises against.
+        </li>
+        <li>
+          <span class="legend-color" style="background:rgba(100,116,139,0.45);display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle"></span>
+          <b>grid tariff</b> — fixed transport / network fee from the grid operator (öre/kWh). Same value every slot.
+        </li>
+        <li>
+          <span class="legend-color" style="background:rgba(100,116,139,0.25);display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle"></span>
+          <b>VAT</b> — moms applied to spot + grid tariff. Set in <em>Settings → Price</em>.
+        </li>
+      </ul>
+      <p class="plan-help-note">
+        Hover any bar for the exact split (spot / grid / VAT) plus PV, load, battery and SoC for that slot.
+      </p>
+
+      <h3>Savings badges</h3>
+      <p>Each badge compares the plan's expected cost against an alternative scenario over the same horizon. All three numbers are computed by the same cost model, so they're directly comparable.</p>
+      <ul>
+        <li><b>vs no battery</b> — what this horizon would cost with no battery at all (grid flow = load + PV each slot, priced normally). Captures the combined value of battery + planner.</li>
+        <li><b>vs self-consumption</b> — what plain self-consumption mode would cost over the same forecast (same battery, same constraints, no arbitrage). Captures the extra value the planner adds on top of passive SC.</li>
+        <li><b>vs flat avg price</b> — what no-battery import would cost if every kWh were priced at the horizon's average price. Captures the value of <em>timing</em> — shifting consumption into cheap hours — independently of the battery.</li>
+      </ul>
+      <p class="plan-help-note">
+        <span class="saving-pos-inline">Green +</span> means the plan saves vs that baseline.
+        <span class="saving-neg-inline">Red −</span> means it costs more (rare, usually a sign the baseline benefits from a lucky forecast).
+      </p>
+    </div>
+  </ftw-modal>
 
   <!-- EV detail popup -->
   <ftw-modal id="ev-modal" style="--ftw-modal-max-width:380px">
