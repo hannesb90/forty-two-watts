@@ -1133,10 +1133,6 @@ class FtwEnergyFlow extends FtwElement {
                 fill="var(--hero-sub-text)" class="sv-hub-sub">
             ${Math.round(this._readings.selfPoweredPctToday)}% SELF-POWERED TODAY
           </text>` : ""}
-          <text x="${CX}" y="${P.hubLabelY}" text-anchor="middle"
-                fill="var(--hero-label-text)" class="sv-hub-label">
-            CONSUMING
-          </text>
         </g>
       </svg>
     `;
@@ -1400,17 +1396,23 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
   // room inside the disk than a single "SOLAR · SUNGROW" line.
   const twoLine = !!nameLabel;
   const titleY = Math.round((twoLine ? -0.50 : -0.42) * r);
-  // Five-row stack when dailyKwh is present (matches the hub layout):
-  //   title · value · daily · sub · soc
-  // The daily-totals line sits BETWEEN the realtime power value and
-  // the status label so the eye reads top-to-bottom: "what is it
-  // doing now → how much today → label". Without dailyKwh the layout
-  // collapses back to the legacy 4-row stack so old planet payloads
-  // (e.g. EV) still render cleanly.
-  const valueY = Math.round((showDaily ? 0.04 : 0.09) * r);
-  const dailyY = Math.round(0.27  * r);
-  const subY   = Math.round((showDaily ? 0.50 : 0.42) * r);
-  const socY   = Math.round((showDaily ? 0.76 : 0.70) * r);
+  // Even four-gap spread between the rows, anchored on title (top)
+  // and soc (bottom). The user's spec: "same spacing between title
+  // and power as between power and kWh". The simplest answer that
+  // also makes daily / sub / soc breathe equally is one constant
+  // step. Without dailyKwh the layout collapses to a 4-row stack.
+  //
+  // Spread = (socY − titleY) / steps:
+  //   showDaily → 4 steps  (5 rows: title, value, daily, sub, soc)
+  //   else      → 3 steps  (4 rows: title, value, sub, soc)
+  const titleR = twoLine ? -0.50 : -0.42;
+  const socR   = showDaily ? 0.76 : 0.70;
+  const steps  = showDaily ? 4 : 3;
+  const stepR  = (socR - titleR) / steps;
+  const valueY = Math.round((titleR + stepR * 1) * r);
+  const dailyY = Math.round((titleR + stepR * 2) * r);
+  const subY   = Math.round((titleR + stepR * (showDaily ? 3 : 2)) * r);
+  const socY   = Math.round(socR * r);
   const titleSvg = twoLine
     ? `<text x="${x}" y="${y + titleY}" text-anchor="middle"
              fill="var(--hero-label-text)" class="sv-node-title">
