@@ -1450,11 +1450,14 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
     const dailyR = compressed
       ? (compact ? 0.32 : 0.30)
       : (compact ? 0.32 : 0.50);
+    // Compact bidirectional planets bumped down a touch (0.55 → 0.62)
+    // so the importing/exporting label and battery SoC stop sitting
+    // right under the kWh row on small screens.
     const subR = noSocButSub
-      ? (compact ? 0.55 : 0.60)
+      ? (compact ? 0.62 : 0.60)
       : (showDaily ? (compact ? 0.55 : 0.66) : 0.42);
     const socR = noSubButSoc
-      ? (compact ? 0.55 : 0.52)
+      ? (compact ? 0.62 : 0.52)
       : (showDaily ? (compact ? 0.74 : 0.80) : 0.70);
     valueY = Math.round((showDaily ? 0.04 : 0.09) * r);
     dailyY = Math.round(dailyR * r);
