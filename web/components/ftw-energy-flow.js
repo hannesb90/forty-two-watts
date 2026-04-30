@@ -1505,7 +1505,7 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
     const fillColor = socStale ? "var(--stat-warn, #f59e0b)" : "var(--cyan)";
     const titleAttr = socStale ? ` data-tooltip="Reading is stale (no recent contact with vehicle)"` : "";
     socText = `<text x="${x}" y="${y + socY}" text-anchor="middle"
-             fill="${fillColor}" class="sv-node-sub"${titleAttr}>${aggPrefix}${stalePrefix}${socBody}</text>`;
+             fill="${fillColor}" font-weight="600" class="sv-node-sub"${titleAttr}>${aggPrefix}${stalePrefix}${socBody}</text>`;
   }
   // Icon swapped in during the loading + fade-in phases. Scale chosen
   // so a full-size planet (r ≈ 86) hosts a ~30 px icon — readable at
