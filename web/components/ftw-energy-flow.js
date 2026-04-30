@@ -427,7 +427,7 @@ class FtwEnergyFlow extends FtwElement {
       .sv-node-sub   { font-size: 13px; }
       .sv-hub-value  { font-size: 22px; }
       .sv-hub-label  { font-size: 11px; }
-      .sv-hub-sub    { font-size: 11px; }
+      .sv-hub-sub    { font-size: 10px; }
     }
     @media (max-width: 600px) {
       svg { height: calc(var(--efl-h-factor, 1) * 460px); }
@@ -436,7 +436,11 @@ class FtwEnergyFlow extends FtwElement {
       .sv-node-sub   { font-size: 16px; }
       .sv-hub-value  { font-size: 28px; }
       .sv-hub-label  { font-size: 14px; }
-      .sv-hub-sub    { font-size: 14px; }
+      /* Hub sub-lines (% SELF-POWERED NOW / TODAY) need to stay
+         readable but not crowd the 28px power value. Earlier spec
+         was 14px; that competed with the headline number. 11px keeps
+         the labels sharp without dominating. */
+      .sv-hub-sub    { font-size: 11px; }
     }
   `;
 
@@ -538,6 +542,13 @@ class FtwEnergyFlow extends FtwElement {
   setReadings(r) {
     if (r.load != null)         this._readings.load    = r.load;
     if (Array.isArray(r.planets)) this._readings.planets = r.planets;
+    // Optional today's-totals payload pushed through to the central
+    // hub render. selfPoweredPctToday is the share of consumption
+    // sourced from PV/battery (i.e. NOT the grid) over the whole
+    // day — parallel to the live `selfPoweredPct` the component
+    // computes from current planet power. Nullable; if missing, the
+    // hub just hides that line.
+    if (r.selfPoweredPctToday !== undefined) this._readings.selfPoweredPctToday = r.selfPoweredPctToday;
     // `?delay=N` (dev hook) holds the loading state for N ms after the
     // first setReadings call so the shimmer + fade-in can be inspected.
     // Subsequent calls (once loaded) apply immediately.
@@ -619,6 +630,9 @@ class FtwEnergyFlow extends FtwElement {
         name: p.name || "",
         id: p.id,
         aggregated: !!p.aggregated,
+        dailyKwh: p.placeholder ? null : (p.dailyKwh || null),
+        dailyKwhParts: p.placeholder ? null : (p.dailyKwhParts || null),
+        compact: !!this._compact,
       })
     ).join("");
     return `<g class="ef-layer ef-layer-${layerClass}">` +
@@ -1017,13 +1031,32 @@ class FtwEnergyFlow extends FtwElement {
     // Hdyn becomes empty space beneath the bottom-center cluster,
     // not centered letter-boxing.
     const cy = (Hdyn - bottomExtra) / 2;
+    // Hub vertical layout — four rows centred around `cy` now that
+    // the trailing CONSUMING label is gone. Stack span ≈ 90px (icon
+    // → bottom-of-self-today); offsets chosen so the visual mass
+    // sits in the middle of the disc instead of biasing upward.
+    //
+    //   1. icon                 (above the text block)
+    //   2. realtime power       (the big number)
+    //   3. % SELF-POWERED NOW
+    //   4. % SELF-POWERED TODAY
+    const compact = this._compact;
     const P = {
       vbX, vbW, H: Hdyn, cy,
       orbitR, baseR: tier.baseR, hubR: tier.hubR,
-      hubIconY: cy - (this._compact ? 49 : 50),
-      hubValueY: cy + 10,
-      hubLabelY: cy + (this._compact ? 34 : 36),
-      hubSubY:   cy + (this._compact ? 50 : 54),
+      // Hub icon Y — backed off ~14 px from the previous lift after a
+      // visual check showed the icon sitting on top of the dashed
+      // ring (which lives at hubR − 8). Now icon at cy − 60 desktop
+      // / cy − 76 compact stays comfortably inside the ring while
+      // still clearing the power value below.
+      hubIconY:      cy - (compact ? 76 : 60),
+      // Desktop power value pushed down 8 px (cy − 10 → cy − 2);
+      // compact stays at cy − 8 since the small-screen layout was
+      // already balanced. Sub-lines on desktop follow the same
+      // 8 px shift so the relative spacing is preserved.
+      hubValueY:     cy - (compact ? 8  : 2),
+      hubSelfNowY:   cy + (compact ? 14 : 24),
+      hubSelfTodayY: cy + (compact ? 32 : 42),
     };
     // -- /Dynamic sizing -------------------------------------------------
 
@@ -1101,14 +1134,15 @@ class FtwEnergyFlow extends FtwElement {
                 fill="var(--hero-load-text)" class="sv-hub-value">
             ${fmtKw(load)}
           </text>
-          <text x="${CX}" y="${P.hubLabelY}" text-anchor="middle"
-                fill="var(--hero-label-text)" class="sv-hub-label">
-            CONSUMING
-          </text>
           ${selfPoweredPct !== null ? `
-          <text x="${CX}" y="${P.hubSubY}" text-anchor="middle"
-                fill="var(--hero-sub-text)" class="sv-hub-sub">
-            ${Math.round(selfPoweredPct)}% SELF-POWERED
+          <text x="${CX}" y="${P.hubSelfNowY}" text-anchor="middle"
+                fill="var(--fg)" class="sv-hub-sub">
+            ${Math.round(selfPoweredPct)}% SELF-POWERED NOW
+          </text>` : ""}
+          ${this._readings.selfPoweredPctToday != null ? `
+          <text x="${CX}" y="${P.hubSelfTodayY}" text-anchor="middle"
+                fill="var(--fg)" class="sv-hub-sub">
+            ${Math.round(this._readings.selfPoweredPctToday)}% SELF-POWERED TODAY
           </text>` : ""}
         </g>
       </svg>
@@ -1349,9 +1383,17 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
                             chargeLimit = null, socStale = false, socSource = null,
                             radius = 86,
                             clickable = false, role = "", name = "", id = "",
-                            aggregated = false }) {
+                            aggregated = false,
+                            dailyKwh = null, dailyKwhParts = null,
+                            compact = false }) {
   const r = radius;
   const { x, y } = pos;
+  // Daily totals line — empty string when no payload was passed (back-
+  // compat with callers that haven't been wired up yet). Drops out
+  // entirely on small planets (r < 50, e.g. 4+ planets clustered at
+  // one corner) so the disc text doesn't overflow.
+  const hasParts = Array.isArray(dailyKwhParts) && dailyKwhParts.length > 0;
+  const showDaily = (dailyKwh || hasParts) && r >= 50;
   // Clickable planets must advertise themselves to assistive tech:
   // role=button so screen readers announce "button", and aria-label
   // derived from the visible title/name so the announcement names
@@ -1365,10 +1407,67 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
   // stacked lines ("SOLAR" / "SUNGROW"). That preserves more horizontal
   // room inside the disk than a single "SOLAR · SUNGROW" line.
   const twoLine = !!nameLabel;
-  const titleY = Math.round((twoLine ? -0.50 : -0.42) * r);
-  const valueY = Math.round(0.09  * r);
-  const subY   = Math.round(0.42  * r);
-  const socY   = Math.round(0.70  * r);
+  // Layout branches by visible-row count:
+  //
+  //   3 rows — title · value · daily               (e.g. solar)
+  //   4 rows — title · value · daily · soc         (e.g. battery, no sub)
+  //   5 rows — title · value · daily · sub · soc   (full)
+  //   4 rows — title · value · sub · soc           (legacy, no daily)
+  //
+  // Three-row layout centres the power value on the disc midline.
+  // Four/five-row layouts keep the original generous title→value gap
+  // mirrored on value→daily; sub/soc trail on a tighter step.
+  const showSub = !!sub;
+  const showSoc = soc != null;
+  const simple3 = showDaily && !showSub && !showSoc;
+  let titleY, valueY, dailyY, subY, socY;
+  if (simple3) {
+    // Three-row stack with the title pinned at the legacy level
+    // (so SOLAR aligns horizontally with titles on other corners)
+    // and the power value biased a few pixels BELOW the disc
+    // midline — visual centre on the big number sits near the
+    // disc midline instead of riding above it. Per operator note:
+    // "solar big power should go down a couple of pixels, not same
+    // spacing between SOLAR and the kWh line".
+    titleY = Math.round((twoLine ? -0.50 : -0.42) * r);
+    valueY = Math.round(0.04 * r);
+    dailyY = Math.round(0.42 * r);
+    subY = 0;
+    socY = 0;
+  } else {
+    titleY = Math.round((twoLine ? -0.50 : -0.42) * r);
+    // Two "missing-row" branches that both compress the value→daily
+    // gap from the wide 0.46 r used in the full 5-row case to ~0.26 r,
+    // so daily and the next row don't crowd each other at the disc
+    // bottom:
+    //   - no-sub-but-soc  (battery, post colour-swap)
+    //   - no-soc-but-sub  (grid)
+    // The full 5-row case (EV with daily, sub, AND soc) keeps the
+    // wide gap because there's enough vertical room to spread.
+    const noSubButSoc = !showSub && showSoc;
+    const noSocButSub = showSub && !showSoc;
+    const compressed  = noSubButSoc || noSocButSub;
+    // Compact (≤600px) uses a wider value→daily gap than first
+    // tried (0.22 r → 0.32 r) — the larger CSS font sizes on small
+    // screens make 0.22 r feel cramped. Trailing rows shift down
+    // proportionally so the bubble bottom still sits inside the disc.
+    const dailyR = compressed
+      ? (compact ? 0.32 : 0.30)
+      : (compact ? 0.32 : 0.50);
+    // Compact bidirectional planets bumped down a touch (0.55 → 0.62)
+    // so the importing/exporting label and battery SoC stop sitting
+    // right under the kWh row on small screens.
+    const subR = noSocButSub
+      ? (compact ? 0.62 : 0.60)
+      : (showDaily ? (compact ? 0.55 : 0.66) : 0.42);
+    const socR = noSubButSoc
+      ? (compact ? 0.62 : 0.52)
+      : (showDaily ? (compact ? 0.74 : 0.80) : 0.70);
+    valueY = Math.round((showDaily ? 0.04 : 0.09) * r);
+    dailyY = Math.round(dailyR * r);
+    subY   = Math.round(subR * r);
+    socY   = Math.round(socR * r);
+  }
   const titleSvg = twoLine
     ? `<text x="${x}" y="${y + titleY}" text-anchor="middle"
              fill="var(--hero-label-text)" class="sv-node-title">
@@ -1410,7 +1509,7 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
     const fillColor = socStale ? "var(--stat-warn, #f59e0b)" : "var(--cyan)";
     const titleAttr = socStale ? ` data-tooltip="Reading is stale (no recent contact with vehicle)"` : "";
     socText = `<text x="${x}" y="${y + socY}" text-anchor="middle"
-             fill="${fillColor}" class="sv-node-sub"${titleAttr}>${aggPrefix}${stalePrefix}${socBody}</text>`;
+             fill="${fillColor}" font-weight="600" class="sv-node-sub"${titleAttr}>${aggPrefix}${stalePrefix}${socBody}</text>`;
   }
   // Icon swapped in during the loading + fade-in phases. Scale chosen
   // so a full-size planet (r ≈ 86) hosts a ~30 px icon — readable at
@@ -1431,6 +1530,10 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
       <text x="${x}" y="${y + valueY}" text-anchor="middle" fill="${color}" class="sv-node-value">
         ${value}
       </text>
+      ${showDaily ? `<text x="${x}" y="${y + dailyY}" text-anchor="middle"
+            fill="var(--hero-sub-text)" class="sv-node-sub">
+        ${hasParts ? renderDailyParts(dailyKwhParts) : escapeXml(dailyKwh)}
+      </text>` : ""}
       <text x="${x}" y="${y + subY}" text-anchor="middle"
             fill="var(--hero-sub-text)" class="sv-node-sub">
         ${escapeXml(sub)}
@@ -1440,6 +1543,21 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
 }
 
 // ---------- primitives ----------
+
+// renderDailyParts — emit a sequence of styled <tspan>s inside the
+// daily-totals <text>. Each part has { text, color?, bold?, gap? }.
+// `gap` inserts a small space-tspan before the part for separation.
+// Used today by the grid bubble to colour-code import (red) vs
+// export (green) and bold the magnitudes; other roles still pass a
+// plain string via dailyKwh.
+function renderDailyParts(parts) {
+  return parts.map((p, i) => {
+    const fill = p.color ? `fill="${p.color}"` : "";
+    const weight = p.bold ? `font-weight="600"` : "";
+    const lead = i > 0 ? ` ` : "";
+    return `<tspan ${fill} ${weight}>${escapeXml(lead + (p.text || ""))}</tspan>`;
+  }).join("");
+}
 
 function fmtKw(kw) {
   // Input is kilowatts. Sub-kW values render as plain integer watts
@@ -1512,6 +1630,12 @@ function aggregateGroups(groups) {
       socSource = sources.includes("vehicle") ? "vehicle"
                 : sources.find(s => s === "inferred") || first.socSource || null;
     }
+    // Daily-kWh line on the aggregated bubble: prefer the first
+    // planet's value (callers push the aggregate-role daily total —
+    // e.g. household import_wh, fleet bat_charged_wh — onto every
+    // member of the group, so first wins). Falls back to nil silently.
+    const dailyKwh = first.dailyKwh || null;
+    const dailyKwhParts = first.dailyKwhParts || null;
     out[corner] = [{
       id: `agg-${corner}`,
       corner,
@@ -1527,6 +1651,8 @@ function aggregateGroups(groups) {
       socSource,
       name: `${group.length}×`,
       aggregated: true,
+      dailyKwh,
+      dailyKwhParts,
     }];
   }
   return out;

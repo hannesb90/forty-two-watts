@@ -280,6 +280,16 @@
     if (kwh >= 10) return kwh.toFixed(1) + " kWh";
     return kwh.toFixed(2) + " kWh";
   }
+  // Compact kWh — bubble lines that pack two arrows ("↓ 5.2 ↑ 12") need
+  // tighter formatting than the standalone tile reading. Drops the "kWh"
+  // unit (already implied by the bubble label "kWh today" elsewhere).
+  function fmtKwhShort(kwh) {
+    if (kwh == null || !isFinite(kwh)) return "—";
+    var v = Math.abs(kwh);
+    if (v >= 100) return kwh.toFixed(0);
+    if (v >= 10)  return kwh.toFixed(1);
+    return kwh.toFixed(2);
+  }
 
   function statusClass(status) {
     if (!status) return "status-offline";
@@ -378,6 +388,35 @@
     if (flowEl && typeof flowEl.setReadings === "function") {
       var planets = [];
 
+      // Today's totals (aggregate across drivers; per-driver split
+      // isn't in the API). The same string lands on every same-role
+      // planet so the aggregation layer can pick it up cleanly.
+      var todayE = (data.energy && data.energy.today) || {};
+      var importKwh   = (todayE.import_wh || 0) / 1000;
+      var exportKwh   = (todayE.export_wh || 0) / 1000;
+      var pvKwhTotal  = (todayE.pv_wh || 0) / 1000;
+      var loadKwhTotal = (todayE.load_wh || 0) / 1000;
+      var batChargedKwh    = (todayE.bat_charged_wh || 0) / 1000;
+      var batDischargedKwh = (todayE.bat_discharged_wh || 0) / 1000;
+      // Solar only flows one direction (production); the arrow would
+      // be redundant. Use the kWh unit instead so the line reads as
+      // a standalone total.
+      var pvDailyStr   = fmtKwhShort(pvKwhTotal) + " kWh";
+      // Grid daily totals are colour-coded: import red, export green,
+      // both bold so the polarity reads at a glance against the dark
+      // bubble. Other planets stay on the plain dimmed text style.
+      var gridDailyParts = [
+        { text: "↓ " + fmtKwhShort(importKwh), color: "var(--red-e)",   bold: true },
+        { text: "↑ " + fmtKwhShort(exportKwh), color: "var(--green-e)", bold: true },
+      ];
+      // Battery daily totals share the grid's colour discipline:
+      // charge (energy stored) green, discharge (energy spent) red.
+      // Reads at a glance whether the day was a net-fill or net-drain.
+      var batDailyParts = [
+        { text: "↑ " + fmtKwhShort(batChargedKwh),    color: "var(--green-e)", bold: true },
+        { text: "↓ " + fmtKwhShort(batDischargedKwh), color: "var(--red-e)",   bold: true },
+      ];
+
       // Grid — single utility, bottom-left corner. Import = toward house.
       var gkw = (data.grid_w || 0) / 1000;
       var gIdle = isFlowIdle(gkw);
@@ -388,6 +427,7 @@
                (gkw >= 0 ? "var(--red-e)" : "var(--green-e)"),
         sub: gIdle ? "balanced" :
              (gkw >= 0 ? "importing" : "exporting"),
+        dailyKwhParts: gridDailyParts,
       });
 
       var drvs = data.drivers || {};
@@ -404,7 +444,11 @@
             id: "pv-" + name, corner: "top-left", title: "SOLAR", name: name, role: "pv",
             kw: pvKw, toHub: true,
             color: pvGen ? "var(--amber)" : "var(--fg-muted)",
-            sub: pvGen ? "generating" : "idle",
+            // Solar is one-directional: the power value alone already
+            // shows whether it's generating or idle. The sub-label
+            // would just repeat the same fact in words.
+            sub: "",
+            dailyKwh: pvDailyStr,
           });
         }
         // Battery — sign shows charge/discharge. Discharge flows toward
@@ -412,13 +456,19 @@
         if (d.bat_w != null) {
           var bKw = d.bat_w / 1000;
           var bIdle = isFlowIdle(bKw);
+          // Direction conveyed by colour of the power value: charge
+          // green (filling), discharge red (draining), idle stays
+          // neutral cyan (the battery's identity hue). Drops the
+          // wordy charging/discharging sub-label.
+          var bColor = bIdle ? "var(--cyan)" :
+                       (bKw >= 0 ? "var(--green-e)" : "var(--red-e)");
           planets.push({
             id: "bat-" + name, corner: "top-right", title: "BATTERY", name: name, role: "battery",
             kw: bKw, toHub: bKw < 0,
-            color: "var(--cyan)",
-            sub: bIdle ? "idle" :
-                 (bKw >= 0 ? "charging" : "discharging"),
+            color: bColor,
+            sub: "",
             soc: d.bat_soc != null ? Math.round(d.bat_soc * 100) : null,
+            dailyKwhParts: batDailyParts,
           });
         }
         // EV — always consumes from the house side. When a loadpoint
@@ -462,9 +512,21 @@
         }
       });
 
+      // Self-powered today: share of consumption sourced from PV /
+      // battery over the whole day. Mirrors the realtime
+      // selfPoweredPct the energy-flow component computes from
+      // current planet power, so the two hub lines are directly
+      // comparable. Clamped 0..100 because metering glitches can
+      // briefly report import > load.
+      var selfPoweredPctToday = null;
+      if (loadKwhTotal > 0.001) {
+        selfPoweredPctToday = Math.max(0, Math.min(100,
+          (1 - importKwh / loadKwhTotal) * 100));
+      }
       flowEl.setReadings({
         load:    (data.load_w || 0) / 1000,
         planets: planets,
+        selfPoweredPctToday: selfPoweredPctToday,
       });
     }
 
