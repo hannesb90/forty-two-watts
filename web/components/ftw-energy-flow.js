@@ -427,7 +427,7 @@ class FtwEnergyFlow extends FtwElement {
       .sv-node-sub   { font-size: 13px; }
       .sv-hub-value  { font-size: 22px; }
       .sv-hub-label  { font-size: 11px; }
-      .sv-hub-sub    { font-size: 11px; }
+      .sv-hub-sub    { font-size: 10px; }
     }
     @media (max-width: 600px) {
       svg { height: calc(var(--efl-h-factor, 1) * 460px); }
@@ -436,7 +436,11 @@ class FtwEnergyFlow extends FtwElement {
       .sv-node-sub   { font-size: 16px; }
       .sv-hub-value  { font-size: 28px; }
       .sv-hub-label  { font-size: 14px; }
-      .sv-hub-sub    { font-size: 14px; }
+      /* Hub sub-lines (% SELF-POWERED NOW / TODAY) need to stay
+         readable but not crowd the 28px power value. Earlier spec
+         was 14px; that competed with the headline number. 11px keeps
+         the labels sharp without dominating. */
+      .sv-hub-sub    { font-size: 11px; }
     }
   `;
 
@@ -628,6 +632,7 @@ class FtwEnergyFlow extends FtwElement {
         aggregated: !!p.aggregated,
         dailyKwh: p.placeholder ? null : (p.dailyKwh || null),
         dailyKwhParts: p.placeholder ? null : (p.dailyKwhParts || null),
+        compact: !!this._compact,
       })
     ).join("");
     return `<g class="ef-layer ef-layer-${layerClass}">` +
@@ -1122,12 +1127,12 @@ class FtwEnergyFlow extends FtwElement {
           </text>
           ${selfPoweredPct !== null ? `
           <text x="${CX}" y="${P.hubSelfNowY}" text-anchor="middle"
-                fill="var(--hero-sub-text)" class="sv-hub-sub">
+                fill="var(--fg)" class="sv-hub-sub">
             ${Math.round(selfPoweredPct)}% SELF-POWERED NOW
           </text>` : ""}
           ${this._readings.selfPoweredPctToday != null ? `
           <text x="${CX}" y="${P.hubSelfTodayY}" text-anchor="middle"
-                fill="var(--hero-sub-text)" class="sv-hub-sub">
+                fill="var(--fg)" class="sv-hub-sub">
             ${Math.round(this._readings.selfPoweredPctToday)}% SELF-POWERED TODAY
           </text>` : ""}
         </g>
@@ -1370,7 +1375,8 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
                             radius = 86,
                             clickable = false, role = "", name = "", id = "",
                             aggregated = false,
-                            dailyKwh = null, dailyKwhParts = null }) {
+                            dailyKwh = null, dailyKwhParts = null,
+                            compact = false }) {
   const r = radius;
   const { x, y } = pos;
   // Daily totals line — empty string when no payload was passed (back-
@@ -1395,18 +1401,21 @@ function renderCircleNode({ pos, title, nameLabel, value, sub, color, soc,
   const titleY = Math.round((twoLine ? -0.50 : -0.42) * r);
   // Title→value gap is generous (≈ 0.46 r). User asked for the
   // value→daily gap to match it — without compressing the title→value
-  // pairing. So daily sits one full primary gap below value, and
-  // sub / soc trail with the original tighter spacing. The bubble
-  // grows a touch taller into the disc but stays inside the edge
-  // (socY ≤ 0.80 r).
+  // pairing. On small screens the larger CSS font sizes already eat
+  // most of the available vertical room, so the daily line moves
+  // closer to the power value (compact branch); the bubble stays
+  // inside the disc edge.
   //
   // Without dailyKwh the layout collapses back to the legacy 4-row
   // stack (title · value · sub · soc) so old planet payloads still
   // render cleanly.
+  const dailyR = compact ? 0.32 : 0.50;
+  const subR   = showDaily ? (compact ? 0.55 : 0.66) : 0.42;
+  const socRow = showDaily ? (compact ? 0.74 : 0.80) : 0.70;
   const valueY = Math.round((showDaily ? 0.04 : 0.09) * r);
-  const dailyY = Math.round(0.50  * r);
-  const subY   = Math.round((showDaily ? 0.66 : 0.42) * r);
-  const socY   = Math.round((showDaily ? 0.80 : 0.70) * r);
+  const dailyY = Math.round(dailyR * r);
+  const subY   = Math.round(subR * r);
+  const socY   = Math.round(socRow * r);
   const titleSvg = twoLine
     ? `<text x="${x}" y="${y + titleY}" text-anchor="middle"
              fill="var(--hero-label-text)" class="sv-node-title">
