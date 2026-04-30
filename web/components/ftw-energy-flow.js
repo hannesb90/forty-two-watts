@@ -1050,9 +1050,13 @@ class FtwEnergyFlow extends FtwElement {
       // / cy − 76 compact stays comfortably inside the ring while
       // still clearing the power value below.
       hubIconY:      cy - (compact ? 76 : 60),
-      hubValueY:     cy - (compact ? 8  : 10),
-      hubSelfNowY:   cy + (compact ? 14 : 16),
-      hubSelfTodayY: cy + (compact ? 32 : 34),
+      // Desktop power value pushed down 8 px (cy − 10 → cy − 2);
+      // compact stays at cy − 8 since the small-screen layout was
+      // already balanced. Sub-lines on desktop follow the same
+      // 8 px shift so the relative spacing is preserved.
+      hubValueY:     cy - (compact ? 8  : 2),
+      hubSelfNowY:   cy + (compact ? 14 : 24),
+      hubSelfTodayY: cy + (compact ? 32 : 42),
     };
     // -- /Dynamic sizing -------------------------------------------------
 
