@@ -153,8 +153,8 @@
             '</div></div>' +
             '<label style="margin-top:8px;display:flex;align-items:center;gap:6px;font-weight:normal">' +
             '<input type="checkbox" class="apicreds-block-charge" data-driver-idx="' + idx + '"' + (blockCharge ? ' checked' : '') + '>' +
-            'Blockera extra produktion vid lågt pris ' +
-            help('Sätter max_charge_w = 0 så att optimeraren aldrig beordrar pumpen att producera extra vid billig el. Pumpen kör bara på sitt eget schema — optimeraren kan bara blockera vid dyrt pris.') +
+            'Block extra production at low price ' +
+            help('Sets max_charge_w = 0 so the optimiser never commands the pump to run extra at cheap electricity prices. The pump runs on its own schedule — the optimiser can only block during expensive hours.') +
             '</label>' +
             '</fieldset>';
         }
