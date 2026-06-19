@@ -30,8 +30,124 @@ type Config struct {
 	OCPP          *OCPP              `yaml:"ocpp,omitempty" json:"ocpp,omitempty"`
 	EVCharger     *EVCharger         `yaml:"ev_charger,omitempty" json:"ev_charger,omitempty"`
 	Loadpoints    []Loadpoint        `yaml:"loadpoints,omitempty" json:"loadpoints,omitempty"`
+	FlexLoads     []FlexLoad         `yaml:"flexloads,omitempty" json:"flexloads,omitempty"`
 	Notifications *Notifications     `yaml:"notifications,omitempty" json:"notifications,omitempty"`
 	Nova          *Nova              `yaml:"nova,omitempty" json:"nova,omitempty"`
+
+	// Matter is the site-wide Matter sidecar address used for *admin*
+	// actions (POST /api/matter/commission, GET /api/matter/nodes) — the
+	// one-time pairing-code join and node listing, which aren't tied to
+	// any single driver. Per-driver Matter access (reads/writes/invokes
+	// against an already-joined node_id) is configured separately under
+	// each driver's `capabilities.matter` block; the two typically point
+	// at the same sidecar. Nil disables the /api/matter/* endpoints.
+	Matter *MatterConfig `yaml:"matter,omitempty" json:"matter,omitempty"`
+}
+
+// FlexLoad declares a price-responsive flexible load the flex-load
+// scheduler optimizes against the MPC price/PV forecast — independently of
+// the battery DP. Two types:
+//
+//   - "thermostat": a Matter thermostat (or any driver accepting a
+//     setpoint-write command). The scheduler pre-heats toward MaxC in cheap
+//     / PV-surplus hours and coasts toward MinC in expensive ones, with a
+//     learned RC model guaranteeing the comfort floor. Requires a driver
+//     metric carrying the measured indoor temperature.
+//   - "deferrable": an interruptible on/off load on a smart plug (water
+//     heater, pool pump, dehumidifier). The scheduler runs it in the
+//     cheapest slots that meet its daily energy budget before the deadline.
+//
+// DriverName must match a running driver (typically drivers/matter.lua). The
+// action names map to that driver's `config.commands` entries.
+type FlexLoad struct {
+	Type       string `yaml:"type" json:"type"` // "thermostat" | "deferrable"
+	DriverName string `yaml:"driver_name" json:"driver_name"`
+
+	// Mode selects the control strategy for a thermostat:
+	//   "planner" (default) — horizon-optimised setpoint schedule against
+	//                the MPC price/PV curve (pre-heat in cheap hours).
+	//   "simple"  — standalone block/heat rule needing no MPC: heat to keep
+	//                TargetC, but block heating while the price is above
+	//                PriceThresholdOre when the building's own inertia keeps
+	//                the target for BlockHorizonH hours. Works with a fixed
+	//                threshold and no forecast at all.
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+
+	// IndoorDriver lets the indoor temperature come from a *separate* driver
+	// — e.g. a dedicated Matter Temperature Measurement sensor (cluster
+	// 0x0402) rather than the thermostat's own probe, which is often biased
+	// by its mounting location. Empty = read IndoorMetric off DriverName.
+	IndoorDriver string `yaml:"indoor_driver,omitempty" json:"indoor_driver,omitempty"`
+
+	// ---- simple-mode fields ----
+	TargetC           float64 `yaml:"target_c,omitempty" json:"target_c,omitempty"`                         // comfort target to maintain
+	PriceThresholdOre float64 `yaml:"price_threshold_ore,omitempty" json:"price_threshold_ore,omitempty"` // "expensive" cutoff; 0 = derive from forecast
+	BlockHorizonH     float64 `yaml:"block_horizon_h,omitempty" json:"block_horizon_h,omitempty"`         // target must hold this long to allow a block (default 1h)
+
+	// ---- thermostat fields ----
+	// HeatingKind selects the power model:
+	//   "electric"  (default) — direct electric radiator or resistive floor
+	//                heating; electricity → heat 1:1 (COP=1). MaxHeatW is the
+	//                electrical nameplate and the load is directly meterable.
+	//   "hydronic"  — a thermostatic valve on a water loop fed by a heat
+	//                pump. MaxHeatW is the zone's *thermal* output; the
+	//                electrical draw the EMS pays for is MaxHeatW/COP. The
+	//                per-zone valve isn't itself an electrical load — the
+	//                shiftable power lives at the central heat source, so
+	//                set HeatSourceDriver to attribute it (see notes).
+	HeatingKind     string  `yaml:"heating_kind,omitempty" json:"heating_kind,omitempty"`
+	COP             float64 `yaml:"cop,omitempty" json:"cop,omitempty"` // hydronic only; default 3.0 when kind=hydronic, 1.0 electric
+	// HeatSourceDriver is reserved for a future feature: attributing a
+	// hydronic zone's electrical load to the central HP/boiler driver.
+	// It is declared in config but not yet read or wired in the service.
+	HeatSourceDriver string `yaml:"heat_source_driver,omitempty" json:"heat_source_driver,omitempty"`
+
+	// FlowDriver/FlowMetric read the heat pump's supply (flow) temperature
+	// (°C), typically from a Nibe/Thermia/etc integration. It refines the
+	// reheat-cost side of the pause economics: a hot loop means the heat pump
+	// already produced the heat, so recovering after a pause is nearly free;
+	// a cold loop means reheating must run the compressor and is costly.
+	// FlowDriver empty = read FlowMetric off DriverName. Only meaningful for
+	// hydronic zones.
+	FlowDriver string `yaml:"flow_driver,omitempty" json:"flow_driver,omitempty"`
+	FlowMetric string `yaml:"flow_metric,omitempty" json:"flow_metric,omitempty"`
+	// NominalFlowDeltaC is the design flow-above-room temperature delta at
+	// which the loop holds a full charge of usable heat (floor heating ≈ 15,
+	// radiators ≈ 25-30). Used to scale the stored-heat credit. Default 15.
+	NominalFlowDeltaC float64 `yaml:"nominal_flow_delta_c,omitempty" json:"nominal_flow_delta_c,omitempty"`
+	MinC            float64 `yaml:"min_c,omitempty" json:"min_c,omitempty"`
+	MaxC            float64 `yaml:"max_c,omitempty" json:"max_c,omitempty"`
+	MaxHeatW        float64 `yaml:"max_heat_w,omitempty" json:"max_heat_w,omitempty"`
+	IndoorMetric    string  `yaml:"indoor_metric,omitempty" json:"indoor_metric,omitempty"`
+	HeatMetric      string  `yaml:"heat_metric,omitempty" json:"heat_metric,omitempty"` // optional: metered heating power for RC training
+	SetpointAction  string  `yaml:"setpoint_action,omitempty" json:"setpoint_action,omitempty"`
+	PreHeatFraction float64 `yaml:"preheat_fraction,omitempty" json:"preheat_fraction,omitempty"`
+
+	// SlabDriver/SlabMetric provide the floor/slab temperature — a floor probe
+	// (common on electric floor thermostats) or the hydronic flow temperature
+	// as a proxy. When set, the zone uses a two-mass (slab + room) thermal
+	// model instead of the single-mass RC fit, which captures how a charged
+	// slab keeps the room warm for hours after the element switches off — a
+	// far more accurate coast/forecast for floor heating. SlabDriver empty =
+	// read SlabMetric off DriverName.
+	SlabDriver string `yaml:"slab_driver,omitempty" json:"slab_driver,omitempty"`
+	SlabMetric string `yaml:"slab_metric,omitempty" json:"slab_metric,omitempty"`
+
+	// ---- deferrable fields ----
+	// PowerMetric is the driver metric carrying the plug's measured power
+	// (W) — e.g. a Matter smart plug's ActivePower. When set, the scheduler
+	// learns the appliance's actual run power and daily energy from it, so
+	// EnergyWh / PowerW become optional (learned when left 0). This is what
+	// lets one generic "deferrable" handle a spa, a water heater, or a pump
+	// without the operator characterising each by hand.
+	PowerMetric string  `yaml:"power_metric,omitempty" json:"power_metric,omitempty"`
+	EnergyWh    float64 `yaml:"energy_wh,omitempty" json:"energy_wh,omitempty"`
+	PowerW      float64 `yaml:"power_w,omitempty" json:"power_w,omitempty"`
+	OnAction     string  `yaml:"on_action,omitempty" json:"on_action,omitempty"`
+	OffAction    string  `yaml:"off_action,omitempty" json:"off_action,omitempty"`
+	PreferPV     bool    `yaml:"prefer_pv,omitempty" json:"prefer_pv,omitempty"`
+	EarliestHour int     `yaml:"earliest_hour,omitempty" json:"earliest_hour,omitempty"` // local hour-of-day window start (0 = none)
+	DeadlineHour int     `yaml:"deadline_hour,omitempty" json:"deadline_hour,omitempty"` // local hour-of-day deadline (0 = none)
 }
 
 // Notifications configures outbound push notifications. Exactly one
@@ -268,6 +384,13 @@ type Driver struct {
 	// Disabled skips this driver at startup / reload. Set via the UI when
 	// you want to temporarily take a driver out without editing yaml.
 	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+	// MatterBridge opts this driver's live power reading into the Matter
+	// sidecar's bridge (Phase 3 — see matter-sidecar/src/bridge.ts):
+	// surfaced as a bridged Matter device so other Matter ecosystems
+	// (Apple Home, Home Assistant, ...) can see it. Off by default —
+	// exposing a driver onto another controller's fabric is a deliberate
+	// per-driver choice, not automatic for every configured driver.
+	MatterBridge bool `yaml:"matter_bridge,omitempty" json:"matter_bridge,omitempty"`
 	// HasPassword is a JSON-only signal to the UI that Config["password"]
 	// holds a non-empty value on disk. Populated by MaskSecrets after the
 	// real password is blanked out so the operator can still tell apart
@@ -291,9 +414,10 @@ type Driver struct {
 
 // Capabilities explicitly scope what host resources a driver can access.
 type Capabilities struct {
-	MQTT   *MQTTConfig   `yaml:"mqtt,omitempty" json:"mqtt,omitempty"`
-	Modbus *ModbusConfig `yaml:"modbus,omitempty" json:"modbus,omitempty"`
+	MQTT   *MQTTConfig    `yaml:"mqtt,omitempty" json:"mqtt,omitempty"`
+	Modbus *ModbusConfig  `yaml:"modbus,omitempty" json:"modbus,omitempty"`
 	HTTP   *HTTPCapability `yaml:"http,omitempty" json:"http,omitempty"`
+	Matter *MatterConfig  `yaml:"matter,omitempty" json:"matter,omitempty"`
 }
 
 // MQTTConfig grants access to one MQTT broker.
@@ -314,6 +438,18 @@ type ModbusConfig struct {
 // HTTPCapability grants HTTP access to specific hostnames (future).
 type HTTPCapability struct {
 	AllowedHosts []string `yaml:"allowed_hosts" json:"allowed_hosts"`
+}
+
+// MatterConfig grants a driver access to the Matter controller sidecar
+// (matter-sidecar/, built on matter.js — see go/internal/matter). Host is
+// required; Port defaults to 5580. 42W joins shared devices as an
+// additional fabric admin rather than commissioning them itself, so there
+// is no pairing/BLE config here — the per-device node_id (set in the
+// driver's own config block) is what the sidecar's multi-fabric join
+// hands back.
+type MatterConfig struct {
+	Host string `yaml:"host" json:"host"`
+	Port int    `yaml:"port,omitempty" json:"port,omitempty"` // default 5580
 }
 
 // EffectiveMQTT returns the driver's MQTT config, preferring capabilities over legacy.
@@ -820,9 +956,15 @@ func (c *Config) Validate() error {
 		if d.Lua == "" {
 			return fmt.Errorf("driver %q: must specify `lua`", d.Name)
 		}
-		if d.EffectiveMQTT() == nil && d.EffectiveModbus() == nil && d.Capabilities.HTTP == nil {
-			return fmt.Errorf("driver %q: must have mqtt, modbus, or http capability", d.Name)
+		if d.EffectiveMQTT() == nil && d.EffectiveModbus() == nil && d.Capabilities.HTTP == nil && d.Capabilities.Matter == nil {
+			return fmt.Errorf("driver %q: must have mqtt, modbus, http, or matter capability", d.Name)
 		}
+		if mt := d.Capabilities.Matter; mt != nil && mt.Host == "" {
+			return fmt.Errorf("driver %q: capabilities.matter.host is required", d.Name)
+		}
+	}
+	if c.Matter != nil && c.Matter.Host == "" {
+		return errors.New("matter.host is required when matter: is configured")
 	}
 	if len(c.Drivers) > 0 && siteMeters == 0 {
 		return errors.New("at least one driver must be is_site_meter: true")
@@ -881,6 +1023,32 @@ func (c *Config) Validate() error {
 			}
 			if ev.CooldownS < 0 {
 				return fmt.Errorf("notifications.events[%d]: cooldown_s must be >= 0", i)
+			}
+		}
+	}
+	for i, fl := range c.FlexLoads {
+		if fl.DriverName == "" {
+			return fmt.Errorf("flexloads[%d]: driver_name is required", i)
+		}
+		switch fl.Type {
+		case "thermostat", "deferrable":
+		default:
+			return fmt.Errorf("flexloads[%d] %q: type must be \"thermostat\" or \"deferrable\"", i, fl.DriverName)
+		}
+		if fl.Type == "thermostat" {
+			if fl.MinC == 0 && fl.MaxC == 0 {
+				return fmt.Errorf("flexloads[%d] %q: min_c and max_c are required for type \"thermostat\"", i, fl.DriverName)
+			}
+			if fl.MinC >= fl.MaxC {
+				return fmt.Errorf("flexloads[%d] %q: min_c (%.1f) must be < max_c (%.1f)", i, fl.DriverName, fl.MinC, fl.MaxC)
+			}
+			if fl.COP < 0 {
+				return fmt.Errorf("flexloads[%d] %q: cop must be >= 0", i, fl.DriverName)
+			}
+			switch fl.Mode {
+			case "", "planner", "simple":
+			default:
+				return fmt.Errorf("flexloads[%d] %q: mode must be \"planner\" or \"simple\"", i, fl.DriverName)
 			}
 		}
 	}

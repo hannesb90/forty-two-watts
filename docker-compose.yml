@@ -101,6 +101,45 @@ services:
       - update-ipc:/run/ftw-update
 
   # ---------------------------------------------------------------------
+  # Matter sidecar (matter-sidecar/, built on matter.js — replaces the
+  # earlier python-matter-server draft per maintainer review on PR #1).
+  #
+  # 42W does NOT perform initial commissioning (BLE/Thread/Wi-Fi
+  # provisioning of a brand-new device, which is why the old draft
+  # needed `privileged: true`). That stays the job of whichever
+  # controller the device shipped with (Apple Home, Google Home, Home
+  # Assistant, ...). Once commissioned there, open that controller's
+  # multi-admin "share device" flow to mint a pairing code, then hand
+  # that code to 42W via the sidecar's `commission` command, which
+  # joins as an additional fabric admin over plain IP — no BLE needed
+  # on this side. network_mode: host is required for mDNS discovery of
+  # the shared device. The sidecar's control-plane WebSocket (port 5580,
+  # commission/write_attribute/send_command/...) has no auth of its own,
+  # so it binds to loopback only (matter-sidecar/src/index.ts) — host
+  # networking would otherwise put an unauthenticated device-control API
+  # on the LAN.
+  #
+  # 42W also runs the other direction (Phase 2): as a Matter *server*,
+  # exposing a CommodityPrice cluster (spot price + forecast) other
+  # controllers can read. GET /api/matter/pairing_code returns the codes
+  # to add 42W onto a third-party fabric.
+  #
+  # Phase 3 — a *bridge* surfacing non-Matter DERs (EVSE, inverters,
+  # batteries) as Matter devices to other ecosystems. Opt in per driver
+  # with `matter_bridge: true` in config.yaml; see
+  # matter-sidecar/src/bridge.ts and docs/configuration.md.
+  # ---------------------------------------------------------------------
+  matter-sidecar:
+    build: ./matter-sidecar
+    container_name: ftw-matter-sidecar
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - FTW_MATTER_STORAGE_PATH=/data
+    volumes:
+      - ./data/matter:/data
+
+  # ---------------------------------------------------------------------
   # MQTT broker (Eclipse Mosquitto)
   #
   # Lets on-LAN devices — notably the Pixii PowerShaper's MQTT uplink —

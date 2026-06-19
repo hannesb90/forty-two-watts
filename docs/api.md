@@ -512,6 +512,91 @@ Handler: `go/internal/api/api.go:445`
 
 ---
 
+## Matter sidecar
+
+Admin actions for the 42W Matter sidecar (`matter-sidecar/`, built on
+matter.js) — the one-time pairing-code join and node listing. 42W does not
+commission devices itself; see `drivers/matter.lua`'s header comment for
+the full onboarding flow. Both endpoints require `matter:` configured at
+the config root (`go/internal/config/config.go`'s `Config.Matter`) —
+otherwise they return `503`.
+
+### POST /api/matter/commission
+
+Join a device shared from another controller's fabric using a one-time
+pairing code minted by that controller's "share device" / multi-admin
+flow.
+
+**Request body:**
+
+```json
+{ "pairing_code": "34970112332" }
+```
+
+**Response (200):**
+
+```json
+{ "node_id": 1 }
+```
+
+`node_id` is a small logical id (not Matter's own 64-bit NodeId) — paste
+it into the driver's `config.node_id` field.
+
+**Errors:** `400` missing `pairing_code`; `502` sidecar reachable but the
+commission attempt failed (wrong/expired code, device unreachable); `503`
+sidecar not configured.
+
+Handler: `go/internal/api/api_matter.go`
+
+### GET /api/matter/nodes
+
+List every node the sidecar has joined so far, to confirm a `node_id`
+before pasting it into driver config.
+
+**Response (200):**
+
+```json
+[
+  { "node_id": 1, "matter_node_id": "123456789012345" }
+]
+```
+
+Handler: `go/internal/api/api_matter.go`
+
+### GET /api/matter/pairing_code
+
+Phase 2 — the inverse of `/api/matter/commission`: 42W itself is a
+commissionable Matter device (exposing a CommodityPrice server endpoint
+with spot price + forecast — see `matter-sidecar/src/priceserver.ts`).
+This returns the one-time codes a third-party controller (Apple Home,
+Home Assistant, ...) needs to add 42W onto their own fabric.
+
+**Response (200):**
+
+```json
+{
+  "manual_pairing_code": "34970112332",
+  "qr_pairing_code": "MT:Y.K9042C00KA0648G00"
+}
+```
+
+**Errors:** `502` sidecar reachable but the request failed; `503` sidecar
+not configured.
+
+Handler: `go/internal/api/api_matter.go`
+
+### Phase 3 — Matter bridge (no REST endpoint)
+
+42W as a Matter *bridge*: drivers with `matter_bridge: true` (see
+`docs/configuration.md`) get their live power reading surfaced as a
+bridged Matter device under the sidecar's Aggregator endpoint, so other
+Matter ecosystems can see it. This is config-driven and push-only — a
+background loop (`matterBridgeLoop` in `go/cmd/forty-two-watts/main.go`)
+calls the sidecar's `sync_bridge` command every 5 minutes; there is no
+operator-facing HTTP surface for it.
+
+---
+
 ## MPC planner
 
 ### GET /api/mpc/plan

@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -32,12 +33,14 @@ import (
 	"github.com/frahlg/forty-two-watts/go/internal/arp"
 	"github.com/frahlg/forty-two-watts/go/internal/devtools"
 	"github.com/frahlg/forty-two-watts/go/internal/drivers"
+	"github.com/frahlg/forty-two-watts/go/internal/flexload"
 	"github.com/frahlg/forty-two-watts/go/internal/forecast"
 	"github.com/frahlg/forty-two-watts/go/internal/ha"
 	"github.com/frahlg/forty-two-watts/go/internal/loadmodel"
 	"github.com/frahlg/forty-two-watts/go/internal/loadpoint"
 	mqttcli "github.com/frahlg/forty-two-watts/go/internal/mqtt"
 	modbuscli "github.com/frahlg/forty-two-watts/go/internal/modbus"
+	mattercli "github.com/frahlg/forty-two-watts/go/internal/matter"
 	"github.com/frahlg/forty-two-watts/go/internal/mpc"
 	"github.com/frahlg/forty-two-watts/go/internal/nova"
 	"github.com/frahlg/forty-two-watts/go/internal/ocpp"
@@ -234,6 +237,9 @@ func main() {
 	}
 	reg.ModbusFactory = func(name string, c *config.ModbusConfig) (drivers.ModbusCap, error) {
 		return modbuscli.Dial(c.Host, c.Port, c.UnitID)
+	}
+	reg.MatterFactory = func(name string, c *config.MatterConfig) (drivers.MatterCap, error) {
+		return mattercli.Dial(c.Host, c.Port)
 	}
 	reg.ARPLookup = arp.Lookup
 	// Spawn initial drivers. config.Load has already joined relative Lua
@@ -759,6 +765,120 @@ func main() {
 		}()
 	}
 
+	// ---- Flexible-load scheduler (thermostats + deferrable loads) ----
+	// Optimizes Matter thermostats and smart-plug loads against the MPC
+	// price/PV curve, independently of the battery DP (avoids the DP's
+	// state-space blow-up). Only starts when the operator declares
+	// `flexloads:` in config. See go/internal/flexload + drivers/matter.lua.
+	if len(cfg.FlexLoads) > 0 {
+		devices := make([]flexload.Device, 0, len(cfg.FlexLoads))
+		for _, f := range cfg.FlexLoads {
+			cop := f.COP
+			if cop <= 0 {
+				if f.HeatingKind == "hydronic" {
+					cop = 3.0 // sensible heat-pump default
+				} else {
+					cop = 1.0 // direct electric
+				}
+			}
+			devices = append(devices, flexload.Device{
+				Type:              f.Type,
+				DriverName:        f.DriverName,
+				Mode:              f.Mode,
+				HeatingKind:       f.HeatingKind,
+				COP:               cop,
+				FlowDriver:        f.FlowDriver,
+				FlowMetric:        f.FlowMetric,
+				NominalFlowDeltaC: f.NominalFlowDeltaC,
+				MinC:              f.MinC,
+				MaxC:              f.MaxC,
+				MaxHeatW:          f.MaxHeatW,
+				IndoorDriver:      f.IndoorDriver,
+				IndoorMetric:      f.IndoorMetric,
+				HeatMetric:        f.HeatMetric,
+				SlabDriver:        f.SlabDriver,
+				SlabMetric:        f.SlabMetric,
+				SetpointAction:    f.SetpointAction,
+				PreHeatFraction:   f.PreHeatFraction,
+				TargetC:           f.TargetC,
+				PriceThresholdOre: f.PriceThresholdOre,
+				BlockHorizonH:     f.BlockHorizonH,
+				PowerMetric:       f.PowerMetric,
+				EnergyWh:          f.EnergyWh,
+				PowerW:            f.PowerW,
+				OnAction:          f.OnAction,
+				OffAction:         f.OffAction,
+				PreferPV:          f.PreferPV,
+				EarliestHour:      f.EarliestHour,
+				DeadlineHour:      f.DeadlineHour,
+			})
+		}
+		flexSvc := flexload.NewService(st, tel, devices)
+		if flexSvc != nil {
+			// Slots come from the live MPC plan's price/PV curve, so the
+			// scheduler shares the exact forecast the battery DP planned on.
+			flexSvc.Slots = func() []flexload.PriceSlot {
+				if mpcSvc == nil {
+					return nil
+				}
+				plan := mpcSvc.Latest()
+				if plan == nil || len(plan.Actions) == 0 {
+					return nil
+				}
+				out := make([]flexload.PriceSlot, 0, len(plan.Actions))
+				for _, a := range plan.Actions {
+					// PV surplus = generation beyond house load (site sign:
+					// PVW ≤ 0 generating, LoadW ≥ 0 consuming).
+					surplus := -a.PVW - a.LoadW
+					if surplus < 0 {
+						surplus = 0
+					}
+					out = append(out, flexload.PriceSlot{
+						StartMs:    a.SlotStartMs,
+						LenMin:     a.SlotLenMin,
+						PriceOre:   a.PriceOre,
+						PVSurplusW: surplus,
+					})
+				}
+				return out
+			}
+			// Outdoor temperature forecast — same forecast cache the load
+			// twin reads.
+			flexSvc.Outdoor = func(slotStartMs int64) float64 {
+				rows, err := st.LoadForecasts(slotStartMs-2*3600*1000, slotStartMs+2*3600*1000)
+				if err != nil || len(rows) == 0 {
+					return 0
+				}
+				for _, r := range rows {
+					slotLen := r.SlotLenMin
+					if slotLen <= 0 {
+						slotLen = 60
+					}
+					end := r.SlotTsMs + int64(slotLen)*60*1000
+					if slotStartMs >= r.SlotTsMs && slotStartMs < end && r.TempC != nil {
+						return *r.TempC
+					}
+				}
+				return 0
+			}
+			flexSvc.Dispatch = reg.Send
+			// Independent price source (any time) for simple (non-MPC) mode
+			// AND the reheat-cost side of the economic pause calc, plus the
+			// fuse headroom simple zones arbitrate under.
+			if cfg.Price != nil && cfg.Price.Zone != "" {
+				zone := cfg.Price.Zone
+				flexSvc.PriceAt = func(t time.Time) (float64, bool) {
+					p := priceFc.Predict(zone, t)
+					return p, p > 0
+				}
+			}
+			flexSvc.FuseBudgetW = cfg.Fuse.MaxPowerW()
+			flexSvc.Start(ctx)
+			defer flexSvc.Stop()
+			slog.Info("flexload scheduler started", "devices", len(devices))
+		}
+	}
+
 	// ---- EV loadpoint controller ----
 	// Phase 1 of the EV-arch refactor (issue #172): the per-tick EV
 	// dispatch that used to live inline in the control loop is now
@@ -869,6 +989,27 @@ func main() {
 	// Forward-declare haBridge so Deps can reference it; the bridge
 	// gets wired further down (HA is optional + depends on reg.Names()).
 	var haBridge *ha.Bridge
+
+	// Optional admin connection to the Matter sidecar, separate from any
+	// per-driver capability dial — see config.Config.Matter's doc comment.
+	var matterAdmin *mattercli.Capability
+	if cfg.Matter != nil {
+		m, err := mattercli.Dial(cfg.Matter.Host, cfg.Matter.Port)
+		if err != nil {
+			slog.Warn("matter admin sidecar unreachable at startup — /api/matter/* disabled (restart 42W once the sidecar is up)", "err", err)
+		} else {
+			matterAdmin = m
+			defer matterAdmin.Close()
+		}
+	} else {
+		for _, d := range cfg.Drivers {
+			if d.MatterBridge {
+				slog.Warn("driver has matter_bridge: true but matter: is not configured at the config root — it will not be bridged", "driver", d.Name)
+				break
+			}
+		}
+	}
+
 	deps := &api.Deps{
 		Tel: tel, Ctrl: ctrl, CtrlMu: ctrlMu,
 		State: st,
@@ -899,6 +1040,7 @@ func main() {
 		Events:     bus,
 		Notifications: notifSvc,
 		SelfUpdate: selfUpdater,
+		Matter:     matterAdmin,
 		Version:    Version,
 	}
 	srv := api.New(deps)
@@ -1117,6 +1259,18 @@ func main() {
 
 	// ---- Background: Parquet rolloff (>14d → cold dir) ----
 	go rolloffLoop(ctx, st, coldDir)
+
+	// ---- Background: push price feed to the Matter sidecar (Phase 2 — 42W
+	// as a Matter server) ----
+	if matterAdmin != nil && priceSvc != nil {
+		go matterPriceFeedLoop(ctx, matterAdmin, priceSvc)
+	}
+
+	// ---- Background: push bridged DERs to the Matter sidecar (Phase 3 —
+	// 42W as a Matter bridge) ----
+	if matterAdmin != nil {
+		go matterBridgeLoop(ctx, matterAdmin, tel, cfgMu, cfg)
+	}
 
 	// ---- Control loop ----
 	controlInterval := time.Duration(cfg.Site.ControlIntervalS) * time.Second
@@ -1338,6 +1492,108 @@ func rolloffLoop(ctx context.Context, st *state.Store, coldDir string) {
 		case <-ctx.Done(): return
 		case <-tick.C: doRolloff(ctx, st, coldDir)
 		}
+	}
+}
+
+// matterPriceFeedLoop periodically pushes 42W's current price + forecast
+// into the Matter sidecar's CommodityPrice server endpoint (Phase 2 — 42W
+// exposed as a Matter energy-management device other controllers can read).
+func matterPriceFeedLoop(ctx context.Context, m *mattercli.Capability, priceSvc *prices.Service) {
+	tick := time.NewTicker(5 * time.Minute)
+	defer tick.Stop()
+	pushMatterPriceFeed(m, priceSvc)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			pushMatterPriceFeed(m, priceSvc)
+		}
+	}
+}
+
+func pushMatterPriceFeed(m *mattercli.Capability, priceSvc *prices.Service) {
+	nowMs := time.Now().UnixMilli()
+	rows, err := priceSvc.Load(nowMs-1*3600*1000, nowMs+48*3600*1000)
+	if err != nil {
+		slog.Warn("matter price feed: load prices failed", "err", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	var current *mattercli.PricePeriod
+	forecast := make([]mattercli.PricePeriod, 0, len(rows))
+	for _, row := range rows {
+		startMs := row.SlotTsMs
+		endMs := startMs + int64(row.SlotLenMin)*60*1000
+		endS := mattercli.UnixMsToMatterEpochS(endMs)
+		period := mattercli.PricePeriod{
+			PeriodStartS:    mattercli.UnixMsToMatterEpochS(startMs),
+			PeriodEndS:      &endS,
+			PriceMinorUnits: int64(math.Round(row.TotalOreKwh)),
+		}
+		forecast = append(forecast, period)
+		if current == nil && startMs <= nowMs && nowMs < endMs {
+			c := period
+			current = &c
+		}
+	}
+	if err := m.SetPriceFeed(current, forecast); err != nil {
+		slog.Warn("matter price feed: push failed", "err", err)
+	}
+}
+
+// matterBridgeLoop periodically pushes the live power reading of every
+// driver opted into `matter_bridge: true` to the sidecar's Aggregator
+// endpoint (Phase 3 — 42W as a Matter bridge for non-Matter DERs). Runs
+// on the same 5-minute cadence as the price feed; bridged values aren't
+// dispatch-critical so this doesn't need control-loop frequency.
+func matterBridgeLoop(ctx context.Context, m *mattercli.Capability, tel *telemetry.Store, cfgMu *sync.RWMutex, cfg *config.Config) {
+	tick := time.NewTicker(5 * time.Minute)
+	defer tick.Stop()
+	pushMatterBridge(m, tel, cfgMu, cfg)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			pushMatterBridge(m, tel, cfgMu, cfg)
+		}
+	}
+}
+
+func pushMatterBridge(m *mattercli.Capability, tel *telemetry.Store, cfgMu *sync.RWMutex, cfg *config.Config) {
+	cfgMu.RLock()
+	bridged := make([]string, 0, len(cfg.Drivers))
+	for _, d := range cfg.Drivers {
+		if d.MatterBridge {
+			bridged = append(bridged, d.Name)
+		}
+	}
+	cfgMu.RUnlock()
+	// Always call SyncBridge, even with an empty/shrunk list — bridge.ts
+	// marks devices absent from the call `reachable: false` rather than
+	// removing them, so a config change that drops matter_bridge from
+	// every driver (or just one of several) still needs this push to go
+	// out, or the sidecar keeps reporting stale devices as reachable.
+	devices := make([]mattercli.BridgedDevice, 0, len(bridged))
+	for _, driver := range bridged {
+		h := tel.DriverHealth(driver)
+		if h == nil || !h.IsOnline() {
+			continue
+		}
+		for _, r := range tel.ReadingsByDriver(driver) {
+			devices = append(devices, mattercli.BridgedDevice{
+				ID:         driver + ":" + r.DerType.String(),
+				Name:       driver + " " + r.DerType.String(),
+				DeviceType: r.DerType.String(),
+				PowerMW:    int64(math.Round(r.SmoothedW * 1000)),
+			})
+		}
+	}
+	if err := m.SyncBridge(devices); err != nil {
+		slog.Warn("matter bridge: push failed", "err", err)
 	}
 }
 
