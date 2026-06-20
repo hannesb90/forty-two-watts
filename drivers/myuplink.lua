@@ -156,7 +156,7 @@ local function detect_device_id()
         host.log("error", "MyUplink: /v2/systems/me failed: " .. err)
         return nil
     end
-    for _, system in ipairs(systems.objects or {}) do
+    for _, system in ipairs(systems.systems or {}) do
         local devices = system.devices or {}
         if #devices > 0 then
             local did = devices[1].id
